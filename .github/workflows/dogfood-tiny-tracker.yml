@@ -117,6 +117,18 @@ jobs:
       - name: Build tiny-tracker
         working-directory: tt/examples/tiny-tracker
         run: npm ci --ignore-scripts --no-audit --no-fund && npm run build
+      - name: The defect matrix lists every defect of this tiny-tracker
+        if: inputs.tiny-tracker-ref == ''
+        run: |
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const { DEFECTS } = await import(process.cwd() + "/tt/examples/tiny-tracker/dist/src/start.js");
+            const listed = new Set(JSON.parse(readFileSync("dogfood/tiny-tracker/defects.json", "utf8")).cells.map((c) => c.defect));
+            const missing = DEFECTS.map((d) => d.name).filter((n) => !listed.has(n));
+            const extra = [...listed].filter((n) => !DEFECTS.some((d) => d.name === n));
+            if (missing.length || extra.length) { console.log("::error::defects.json and tiny-tracker differ: missing " + missing.join(", ") + "; not in tiny-tracker " + extra.join(", ")); process.exit(1); }
+            console.log("the matrix lists all " + DEFECTS.length + " defects");
+          '
       - name: Start the tiny-tracker backend
         run: dogfood/tiny-tracker/backend.sh start
       - id: plan
@@ -247,7 +259,7 @@ jobs:
         run: dogfood/tiny-tracker/backend.sh stop
 
   defect-list:
-    if: inputs.cli-ref == '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    if: inputs.cli-ref == '' && inputs.tiny-tracker-ref == '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -262,12 +274,14 @@ jobs:
         run: |
           node -e '
             const c = JSON.parse(require("fs").readFileSync("dogfood/tiny-tracker/defects.json", "utf8")).cells;
+            if (!Array.isArray(c) || c.length === 0 || new Set(c.map((x) => x.defect)).size !== c.length) { console.error("cells must be a non-empty list of distinct defects"); process.exit(1); }
             for (const x of c) if (!/^[a-z0-9-]+$/.test(x.defect) || !/^MWS-[A-Z]+-[0-9]+$/.test(x.requirement) || !/^[0-9a-f]{16}$/.test(x.plan_hash) || !["detected", "missed"].includes(x.expect)) { console.error("bad cell", JSON.stringify(x)); process.exit(1); }
             require("fs").appendFileSync(process.env.GITHUB_OUTPUT, "cells=" + JSON.stringify(c) + "\n");
           '
 
   defect:
     needs: defect-list
+    if: inputs.cli-ref == '' && inputs.tiny-tracker-ref == '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     name: defect ${{ matrix.defect }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -341,7 +355,7 @@ jobs:
         run: dogfood/tiny-tracker/backend.sh stop
 
   traps:
-    if: inputs.cli-ref == '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    if: inputs.cli-ref == '' && inputs.tiny-tracker-ref == '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -384,7 +398,9 @@ jobs:
           SEEN: ${{ steps.plan-crash.outputs.plan-hash }}
         run: dogfood/check-plan-hash.sh 1cd00c43789a075f "$SEEN"
       - name: Arm the crash (kills the backend once the run is under way)
-        run: nohup dogfood/tiny-tracker/crash-backend.sh mwsc-crash > "$RUNNER_TEMP/crash.log" 2>&1 &
+        run: |
+          nohup dogfood/tiny-tracker/crash-backend.sh mwsc-crash > "$RUNNER_TEMP/crash.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/crash-watcher.pid"
       - id: crash
         name: Full run, backend killed during it
         continue-on-error: true
@@ -405,7 +421,9 @@ jobs:
           CLI_EXIT: ${{ steps.crash.outputs.cli-exit-code }}
           EXIT_STATUS: ${{ steps.crash.outputs.exit-status }}
           RESULTS: ${{ steps.crash.outputs.results-path }}
-        run: cat "$RUNNER_TEMP/crash.log"; dogfood/tiny-tracker/expect-trap.sh
+        run: |
+          kill "$(cat "$RUNNER_TEMP/crash-watcher.pid")" 2>/dev/null || true
+          CRASH_LOG="$RUNNER_TEMP/crash.log" dogfood/tiny-tracker/expect-trap.sh
       # Trap 2: every resource's set-up fails.
       - name: Start a fresh backend
         if: always()
@@ -440,6 +458,7 @@ jobs:
         env:
           TRAP: setup-fails
           CLI_EXIT: ${{ steps.setup.outputs.cli-exit-code }}
+          EXIT_STATUS: ${{ steps.setup.outputs.exit-status }}
           RESULTS: ${{ steps.setup.outputs.results-path }}
         run: dogfood/tiny-tracker/expect-trap.sh
       - name: Stop the backend
