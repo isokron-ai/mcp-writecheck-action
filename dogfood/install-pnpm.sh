@@ -4,7 +4,8 @@
 set -euo pipefail
 VERSION=9.15.9
 INTEGRITY='sha512-aARhQYk8ZvrQHAeSMRKOmvuJ74fiaR1p5NQO7iKJiClf1GghgbrlW1hBjDolO95lpQXsfF+UA+zlzDzTfc8lMQ=='
-dir=$(mktemp -d)
+dir=$(mktemp -d "${RUNNER_TEMP:-/tmp}/pnpm.XXXXXX")
+trap 'rm -rf "$dir"' EXIT
 ( cd "$dir" && npm pack --silent "pnpm@$VERSION" > /dev/null )
 tgz="$dir/pnpm-$VERSION.tgz"
 got="sha512-$(openssl dgst -sha512 -binary "$tgz" | openssl base64 -A)"
