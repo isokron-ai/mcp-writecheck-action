@@ -14,7 +14,7 @@
  * that were lost (the bystander inventory), setup that was not released, objects left behind.
  */
 
-import { CLI, RESULTS_FIELDS, requirementUrl, REQUIREMENT_ID, SPEC, VERDICTS } from '../contract.mjs';
+import { CLI, LEFT_BY_DECLARATION, RESULTS_FIELDS, requirementUrl, REQUIREMENT_ID, SPEC, VERDICTS } from '../contract.mjs';
 
 const REGISTRY = new Map(SPEC.requirements.map((r) => [r.id, r]));
 
@@ -76,15 +76,20 @@ export function levelText(record) {
 
 /**
  * @param {object|null} doc  results.json
- * @returns {{ lost: object[], setupUnresolved: object[], leftovers: object[], cleanupFailed: object[], cleanupUnknown: object[], cleanupStopped: string|null, canariesChanged: object[], fixturesNotRestored: object[], inventories: object[] }}
+ * @returns {{ lost: object[], setupUnresolved: object[], leftovers: object[], leftByDeclaration: object[], cleanupFailed: object[], cleanupUnknown: object[], cleanupStopped: string|null, canariesChanged: object[], fixturesNotRestored: object[], inventories: object[] }}
  */
+const byDeclaration = (x) => typeof x?.reason === 'string' && LEFT_BY_DECLARATION.some((re) => re.test(x.reason));
+
 export function safetyFacts(doc) {
   const results = Array.isArray(doc?.results) ? doc.results : [];
   const arr = (v) => (Array.isArray(v) ? v : []);
   return {
     lost: results.filter((r) => arr(r.numbers?.[RESULTS_FIELDS.bystandersLost]).length > 0),
     setupUnresolved: arr(doc?.safety?.[RESULTS_FIELDS.setupUnresolved]),
-    leftovers: arr(doc?.leftovers),
+    // why: an object left because the manifest's cleanup policy says so (ephemeral, leave, archive) is not
+    // something a person has to act on; only the others are leftovers that need attention.
+    leftovers: arr(doc?.leftovers).filter((x) => !byDeclaration(x)),
+    leftByDeclaration: arr(doc?.leftovers).filter(byDeclaration),
     cleanupFailed: arr(doc?.cleanup?.failed),
     cleanupUnknown: arr(doc?.cleanup?.unknown),
     cleanupStopped: typeof doc?.cleanup?.stopped === 'string' && doc.cleanup.stopped ? doc.cleanup.stopped : null,
@@ -231,6 +236,11 @@ function safetySections(doc, facts) {
     L.push('### Needs attention');
     L.push('');
     for (const w of warn) L.push(`- ${w}`);
+  }
+  if (facts.leftByDeclaration.length) {
+    const policies = uniq(facts.leftByDeclaration.map((x) => x.reason)).map(md).join('; ');
+    L.push('');
+    L.push(`Objects of this run were left in the test environment because the manifest's clean-up policy says so (${policies}). They carry the prefix ${code(doc.run?.prefix)}; ${CLI.reportFile} lists them.`);
   }
   return L;
 }

@@ -260,3 +260,33 @@ test('server text in a stop or clean-up reason cannot add markup or a status lin
     assert.ok(!status.includes('[click]('), status);
   }
 });
+
+test('leftovers the manifest asked for (cleanup: ephemeral, leave, archive) are listed apart and need no attention', () => {
+  const held = rec('MWS-UPD-1', 'MUST', 'held');
+  const declared = [
+    { resource: 'ticket', id: 'T-3', name: null, how: 'created by this tester', reason: 'the backend is declared disposable (cleanup: ephemeral)' },
+    { resource: 'ticket', id: 'T-4', name: null, how: 'created by this tester', reason: 'cleanup: leave' },
+    { resource: 'ticket', id: 'T-5', name: null, how: 'created by this tester', reason: 'archived (the object remains, closed)' },
+  ];
+  const d = doc([held], { leftovers: declared });
+  const f = safetyFacts(d);
+  assert.equal(f.leftovers.length, 0);
+  assert.equal(f.leftByDeclaration.length, 3);
+  const out = renderRun({ doc: d, specUrl: 'https://example.test/mws', failOn: 'must', cliExit: 0, decision: decide({ failOn: 'must', cliExit: 0, doc: d }), cliVersion: 'x', artifactName: 'a' });
+  assert.doesNotMatch(out, /Needs attention/);
+  assert.match(out, /because the manifest's clean-up policy says so/);
+});
+
+test('a leftover with any other reason still needs attention, beside declared ones', () => {
+  const held = rec('MWS-UPD-1', 'MUST', 'held');
+  const d = doc([held], { leftovers: [
+    { resource: 'ticket', id: 'T-3', name: null, how: 'created by this tester', reason: 'the backend is declared disposable (cleanup: ephemeral)' },
+    { resource: 'ticket', id: 'T-6', name: null, how: 'created by this tester', reason: 'the id now reads back as an object without this run\'s prefix mwsc-abc-; it was not touched' },
+    { resource: 'ticket', id: 'T-7', name: null, how: 'created by this tester', reason: 'cleanup: ephemeral, said the server' },
+  ] });
+  const f = safetyFacts(d);
+  assert.deepEqual(f.leftovers.map((x) => x.id), ['T-6', 'T-7']);
+  const out = renderRun({ doc: d, specUrl: 'https://example.test/mws', failOn: 'must', cliExit: 0, decision: decide({ failOn: 'must', cliExit: 0, doc: d }), cliVersion: 'x', artifactName: 'a' });
+  assert.match(out, /### Needs attention/);
+  assert.match(out, /T-6/);
+});

@@ -14,7 +14,7 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { CLI, CLI_DEFAULT_REF, CLI_ENTRY, REQUIREMENT_ID, requirementUrl, SPEC, SPEC_DEFAULT_URL, VERDICTS } from '../contract.mjs';
+import { CLI, CLI_DEFAULT_REF, CLI_ENTRY, LEFT_BY_DECLARATION, REQUIREMENT_ID, requirementUrl, SPEC, SPEC_DEFAULT_URL, VERDICTS } from '../contract.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const cliDir = process.env.CLI_DIR;
@@ -156,4 +156,14 @@ test('the two skills cite only requirement IDs of the registry, and the builder 
   const rules = [...builder.matchAll(/^\*\*(MWS-[A-Z]+-\d+) \((MUST|SHOULD)/gm)].map((m) => `${m[1]} ${m[2]}`);
   assert.deepEqual(rules, SPEC.requirements.map((r) => `${r.id} ${r.level}`));
   for (const text of [builder, caller]) assert.ok(text.includes(`spec commit \`${SKILLS_SPEC_COMMIT}\``), 'a skill names another spec commit than the one recorded for the skills');
+});
+
+test('the pinned CLI writes the leftover reasons LEFT_BY_DECLARATION matches', { skip: !cliDir && 'set CLI_DIR to a built packages/writecheck' }, () => {
+  // why: the summary keeps objects left by the manifest's clean-up policy out of "Needs attention" by their
+  // reason text; if the CLI rewords one, the summary would warn again, so the texts are checked here.
+  const src = readFileSync(join(cliDir, 'dist', 'src', 'core', 'cleanup.js'), 'utf8');
+  for (const re of LEFT_BY_DECLARATION) {
+    const literal = re.source.replace(/^\^|\$$/g, '').replace(/\\(.)/g, '$1');
+    assert.ok(src.includes(literal), `core/cleanup.js does not write the leftover reason "${literal}"`);
+  }
 });

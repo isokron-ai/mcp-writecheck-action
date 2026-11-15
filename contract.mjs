@@ -140,6 +140,18 @@ export const CLI = {
  *   results[].attribution       server, platform or unresolved on a violated or platform record of a
  *                               requirement that lists platform; null otherwise (spec 8.2, rule 3).
  */
+/**
+ * Leftovers the manifest asked for: the `reason` the CLI writes for an object it left behind because
+ * the resource's `cleanup` policy says so (core/cleanup.ts at CLI_DEFAULT_REF): `ephemeral` (the backend
+ * is disposable), `leave`, and `archive` (archived, so the object remains). The summary lists these
+ * apart from objects left behind by accident, and they raise no warning.
+ */
+export const LEFT_BY_DECLARATION = [
+  /^the backend is declared disposable \(cleanup: ephemeral\)$/,
+  /^cleanup: leave$/,
+  /^archived \(the object remains, closed\)$/,
+];
+
 export const RESULTS_FIELDS = {
   bystandersLost: 'bystanders_lost',
   bystanderInventory: 'bystander_inventory',
