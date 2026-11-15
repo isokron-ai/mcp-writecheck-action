@@ -78,18 +78,28 @@ export function levelText(record) {
  * @param {object|null} doc  results.json
  * @returns {{ lost: object[], setupUnresolved: object[], leftovers: object[], leftByDeclaration: object[], cleanupFailed: object[], cleanupUnknown: object[], cleanupStopped: string|null, canariesChanged: object[], fixturesNotRestored: object[], inventories: object[] }}
  */
-const byDeclaration = (x) => typeof x?.reason === 'string' && LEFT_BY_DECLARATION.some((re) => re.test(x.reason));
+/**
+ * A leftover the CLI left because the manifest's clean-up policy says so: one the tester created, whose
+ * reason is one of the CLI's fixed texts, and which is not also a failed delete or an open create. (A failed
+ * delete's reason can quote the server's answer, which could repeat one of those texts word for word.)
+ */
+const leftKey = (x) => `${x?.resource}\u0000${JSON.stringify(x?.id ?? null)}`;
+const byDeclaration = (doc) => {
+  const open = new Set([...(Array.isArray(doc?.cleanup?.failed) ? doc.cleanup.failed : []), ...(Array.isArray(doc?.cleanup?.unknown) ? doc.cleanup.unknown : [])].map(leftKey));
+  return (x) => x?.how === 'created by this tester' && x.id != null && !open.has(leftKey(x)) && typeof x.reason === 'string' && LEFT_BY_DECLARATION.some((re) => re.test(x.reason));
+};
 
 export function safetyFacts(doc) {
   const results = Array.isArray(doc?.results) ? doc.results : [];
   const arr = (v) => (Array.isArray(v) ? v : []);
+  const declared = byDeclaration(doc);
   return {
     lost: results.filter((r) => arr(r.numbers?.[RESULTS_FIELDS.bystandersLost]).length > 0),
     setupUnresolved: arr(doc?.safety?.[RESULTS_FIELDS.setupUnresolved]),
     // why: an object left because the manifest's cleanup policy says so (ephemeral, leave, archive) is not
     // something a person has to act on; only the others are leftovers that need attention.
-    leftovers: arr(doc?.leftovers).filter((x) => !byDeclaration(x)),
-    leftByDeclaration: arr(doc?.leftovers).filter(byDeclaration),
+    leftovers: arr(doc?.leftovers).filter((x) => !declared(x)),
+    leftByDeclaration: arr(doc?.leftovers).filter(declared),
     cleanupFailed: arr(doc?.cleanup?.failed),
     cleanupUnknown: arr(doc?.cleanup?.unknown),
     cleanupStopped: typeof doc?.cleanup?.stopped === 'string' && doc.cleanup.stopped ? doc.cleanup.stopped : null,
@@ -231,16 +241,16 @@ function safetySections(doc, facts) {
   if (facts.cleanupUnknown.length) warn.push(`Creates whose outcome is unknown are still open in the ledger (${facts.cleanupUnknown.slice(0, 20).map((x) => md(x.resource ?? '?')).join(', ')}). Download the artifact and run \`mcp-writecheck cleanup\` with its \`state\` folder against the same target.`);
   for (const c of facts.canariesChanged) warn.push(`Untouched-state canary ${code(c.name)} changed during the run${c.note ? ` (${md(c.note)})` : ''}.`);
   for (const f of facts.fixturesNotRestored) warn.push(`Fixture ${code(f.resource)} was not put back to its original values${f.note ? ` (${md(f.note)})` : ''}.`);
+  if (facts.leftByDeclaration.length) {
+    const policies = uniq(facts.leftByDeclaration.map((x) => x.reason)).map(md).join('; ');
+    L.push('');
+    L.push(`Objects of this run were left in the test environment because the manifest's clean-up policy says so (${policies}). They carry the prefix ${code(doc.run?.prefix)}; \`${CLI.reportFile}\` lists them.`);
+  }
   if (warn.length) {
     L.push('');
     L.push('### Needs attention');
     L.push('');
     for (const w of warn) L.push(`- ${w}`);
-  }
-  if (facts.leftByDeclaration.length) {
-    const policies = uniq(facts.leftByDeclaration.map((x) => x.reason)).map(md).join('; ');
-    L.push('');
-    L.push(`Objects of this run were left in the test environment because the manifest's clean-up policy says so (${policies}). They carry the prefix ${code(doc.run?.prefix)}; ${CLI.reportFile} lists them.`);
   }
   return L;
 }

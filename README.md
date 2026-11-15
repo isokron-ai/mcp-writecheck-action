@@ -116,7 +116,7 @@ Otherwise only `violated` records can fail the job:
 | `must` | a record of a MUST is `violated` |
 | `any` | any record is `violated` |
 
-`platform`, `not observed`, `not tested`, `not applicable` and `self-attested` records never fail a job, including a `self-attested` record whose answer is "no". Objects left behind on purpose (`cleanup: leave` or `ephemeral` in the manifest), a changed canary and a fixture not put back are shown under "Needs attention" and do not fail the job by themselves.
+`platform`, `not observed`, `not tested`, `not applicable` and `self-attested` records never fail a job, including a `self-attested` record whose answer is "no". Objects left behind on purpose (`cleanup: leave`, `ephemeral` or `archive` in the manifest) get one plain line and no warning. Other leftovers, a changed canary and a fixture not put back are shown under "Needs attention" and do not fail the job by themselves.
 
 A requirement counts as a MUST when the spec says MUST or the CLI's record says MUST. At the pinned commit the two agree on all 37 requirements; the rule stays so that a future difference errs on the strict side, and the summary marks any such record.
 

@@ -290,3 +290,16 @@ test('a leftover with any other reason still needs attention, beside declared on
   assert.match(out, /### Needs attention/);
   assert.match(out, /T-6/);
 });
+
+test('a failed delete whose reason repeats a declared text word for word is not taken as declared', () => {
+  const held = rec('MWS-UPD-1', 'MUST', 'held');
+  const failed = { resource: 'ticket', id: 'T-8', name: null, how: 'created by this tester', reason: 'cleanup: leave' };
+  const unknown = { resource: 'ticket', id: null, name: null, how: 'create through create_ticket with an unknown outcome', reason: 'cleanup: leave' };
+  const d = doc([held], { leftovers: [failed, unknown], cleanup: { deleted: 0, failed: [failed], unknown: [{ resource: 'ticket', intent: 'i1', tool: 'create_ticket', reason: 'cleanup: leave' }], stopped: null } });
+  const f = safetyFacts(d);
+  assert.equal(f.leftByDeclaration.length, 0);
+  assert.equal(f.leftovers.length, 2);
+  const out = renderRun({ doc: d, specUrl: 'https://example.test/mws', failOn: 'must', cliExit: 0, decision: decide({ failOn: 'must', cliExit: 0, doc: d }), cliVersion: 'x', artifactName: 'a' });
+  assert.doesNotMatch(out, /clean-up policy says so/);
+  assert.match(out, /### Needs attention/);
+});
