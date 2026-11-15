@@ -1,0 +1,155 @@
+# Dogfood: this action against writesafe (strapi-plugin-writesafe-mcp), IsoKron's Strapi 5 plugin.
+#
+# The job checks out the public plugin repository at a pinned commit, builds its test app with the
+# plugin installed from the packed tarball (the plugin repository's own ci/prepare_app.sh), starts
+# Strapi 5.62.0 on SQLite inside the runner, seeds test data and runs the action.
+#
+#   plan  on: the plan and its hash (tools/list only; nothing is written).
+#   full  OFF until the owner decides (see the job's comment).
+#
+# Security: no pull_request_target. A pull request from a fork runs nothing here (the job's `if:`), so
+# a fork never gets MWS_CLI_TOKEN, the one secret (read-only on the CLI's repository, for the CLI fetch
+# only; the plugin repository is public). Every Strapi credential is generated in the job and masked.
+# Third-party actions are pinned by full SHA. Strapi listens on 127.0.0.1 only.
+
+name: "dogfood: writesafe"
+
+on:
+  workflow_dispatch:
+    inputs:
+      cli-ref:
+        description: mcp-writecheck commit to test with (full 40-character SHA). Empty for the action's default.
+        required: false
+        default: ''
+      plan-hashes:
+        description: "Accepted plan hashes for that CLI, after reading the plans: space-separated job=hash pairs (jobs: plan, full)."
+        required: false
+        default: ''
+  schedule:
+    - cron: '29 3 * * *'
+  pull_request:
+    paths: ['dogfood/writesafe/**', 'dogfood/*.sh', '.github/workflows/dogfood-writesafe.yml', 'action.yml', 'contract.mjs', 'src/**']
+  push:
+    branches: [main]
+    paths: ['dogfood/writesafe/**', 'dogfood/*.sh', '.github/workflows/dogfood-writesafe.yml', 'action.yml', 'contract.mjs', 'src/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dogfood-writesafe-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # isokron-ai/strapi-plugin-writesafe main (the public sync).
+  WS_REF: 8bb3bf87c22c64a7824f9f6ae6de45ba55ac3486
+  STRAPI_VERSION: 5.62.0
+  STRAPI_TELEMETRY_DISABLED: 'true'
+  DO_NOT_TRACK: '1'
+  PLAN_HASHES: ${{ inputs.plan-hashes }}
+
+jobs:
+  plan:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PLAN_HASH: 0000000000000000
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out writesafe
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: isokron-ai/strapi-plugin-writesafe
+          ref: ${{ env.WS_REF }}
+          path: ws
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Build the test app
+        run: dogfood/writesafe/strapi.sh prepare
+      - name: Start Strapi and seed test data
+        run: dogfood/writesafe/strapi.sh start
+      - id: plan
+        name: Plan
+        uses: ./
+        with:
+          manifest: dogfood/writesafe/writecheck.yaml
+          mode: plan
+          cli-ref: ${{ inputs.cli-ref }}
+          artifact-name: writesafe-plan
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+      - name: Compare the plan hash with the accepted one
+        env:
+          SEEN: ${{ steps.plan.outputs.plan-hash }}
+        run: dogfood/check-plan-hash.sh "$PLAN_HASH" "$SEEN" plan
+      - name: Stop Strapi
+        if: always()
+        run: dogfood/writesafe/strapi.sh stop
+
+  # OFF: waits for the owner. A full run on the plugin's public main would publish the results of the
+  # plugin's own pre-release test cycle before the fixes for them are merged and synced. Switch it on
+  # (delete the `false &&`) once the owner says so; pin PLAN_HASH from the plan job first.
+  full:
+    if: false && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PLAN_HASH: 0000000000000000
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out writesafe
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: isokron-ai/strapi-plugin-writesafe
+          ref: ${{ env.WS_REF }}
+          path: ws
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Build the test app
+        run: dogfood/writesafe/strapi.sh prepare
+      - name: Start Strapi and seed test data
+        run: dogfood/writesafe/strapi.sh start
+      - id: plan
+        name: Plan
+        uses: ./
+        with:
+          manifest: dogfood/writesafe/writecheck.yaml
+          mode: plan
+          cli-ref: ${{ inputs.cli-ref }}
+          artifact-name: writesafe-full-plan
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+      - name: Compare the plan hash with the accepted one
+        env:
+          SEEN: ${{ steps.plan.outputs.plan-hash }}
+        run: dogfood/check-plan-hash.sh "$PLAN_HASH" "$SEEN" full
+      - name: Catalog
+        uses: ./
+        with:
+          manifest: dogfood/writesafe/writecheck.yaml
+          mode: catalog
+          fail-on: must
+          cli-ref: ${{ inputs.cli-ref }}
+          artifact-name: writesafe-catalog
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+      - name: Full run
+        uses: ./
+        with:
+          manifest: dogfood/writesafe/writecheck.yaml
+          mode: full
+          fail-on: must
+          confirm-target: writesafe-dogfood-strapi-5.62.0
+          plan-hash: ${{ env.ACCEPTED_PLAN_HASH }}
+          cli-ref: ${{ inputs.cli-ref }}
+          artifact-name: writesafe-full
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+      - name: Stop Strapi
+        if: always()
+        run: dogfood/writesafe/strapi.sh stop

@@ -10,6 +10,9 @@ name: selftest
 
 on:
   workflow_dispatch:
+  # Nightly as well, so a change in the pinned commits' surroundings (runner image, Node) shows.
+  schedule:
+    - cron: '5 3 * * *'
   push:
     branches: [main]
 
