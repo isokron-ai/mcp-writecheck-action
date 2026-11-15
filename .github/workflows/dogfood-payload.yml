@@ -27,12 +27,23 @@
 name: "dogfood: payload"
 
 on:
-  # TEMPORARY, dropped before the PR: workflow_dispatch needs the file on main.
-  push:
-    branches: ['dogfood/payload']
   workflow_dispatch:
+    inputs:
+      cli-ref:
+        description: mcp-writecheck commit to test with (full 40-character SHA). Empty for the action's default.
+        required: false
+        default: ''
+      plan-hashes:
+        description: "Accepted plan hashes for that CLI, after reading the plans: space-separated job=hash pairs (job names as in this file)."
+        required: false
+        default: ''
   schedule:
     - cron: '7 4 * * *'
+  pull_request:
+    paths: ['dogfood/payload/**', 'dogfood/*.sh', '.github/workflows/dogfood-payload.yml', 'action.yml', 'contract.mjs', 'src/**']
+  push:
+    branches: [main]
+    paths: ['dogfood/payload/**', 'dogfood/*.sh', '.github/workflows/dogfood-payload.yml', 'action.yml', 'contract.mjs', 'src/**']
 
 permissions:
   contents: read
@@ -42,6 +53,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  PLAN_HASHES: ${{ inputs.plan-hashes }}
   # isokron-ai/payload-mcp-writepath-experiment main (its packages/plugin-mcp is research v2.1;
   # the build script builds from the tags research-v2.1-v3.93.0 and upstream-v3.93.0).
   EXP_REF: 35415109e36c45b6b0e9d9eb7686218a3b320e01
@@ -49,6 +61,7 @@ env:
 
 jobs:
   research:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     services:
@@ -68,6 +81,26 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The CLI first, before any server or third-party code runs in this job: the only step with the token.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - id: cliref
+        name: Choose the CLI commit
+        env:
+          INPUT_REF: ${{ inputs.cli-ref }}
+        run: dogfood/cli-ref.sh
+      - name: Check out mcp-writecheck
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: isokron-ai/mcp-write-safety
+          ref: ${{ steps.cliref.outputs.ref }}
+          token: ${{ secrets.MWS_CLI_TOKEN }}
+          path: mws-cli
+          sparse-checkout: packages/writecheck
+          persist-credentials: false
+      - name: Build mcp-writecheck
+        run: dogfood/build-cli.sh
       - name: Check out the experiment
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -97,11 +130,11 @@ jobs:
           manifest: dogfood/payload/writecheck.research.yaml
           mode: plan
           artifact-name: payload-research-plan
-          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+          cli-path: ${{ env.MWSC_CLI_PATH }}
       - name: Compare the plan hash with the accepted one
         env:
           SEEN: ${{ steps.plan.outputs.plan-hash }}
-        run: dogfood/check-plan-hash.sh "$PLAN_HASH" "$SEEN"
+        run: dogfood/check-plan-hash.sh "$PLAN_HASH" "$SEEN" research
       - name: Catalog
         uses: ./
         with:
@@ -109,7 +142,7 @@ jobs:
           mode: catalog
           fail-on: any
           artifact-name: payload-research-catalog
-          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+          cli-path: ${{ env.MWSC_CLI_PATH }}
       - id: full
         name: Full run
         uses: ./
@@ -118,9 +151,9 @@ jobs:
           mode: full
           fail-on: none
           confirm-target: dogfood-payload-research-v2.1
-          plan-hash: ${{ env.PLAN_HASH }}
+          plan-hash: ${{ env.ACCEPTED_PLAN_HASH }}
           artifact-name: payload-research-full
-          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+          cli-path: ${{ env.MWSC_CLI_PATH }}
       - name: Compare the violated records with the known ones
         if: always() && steps.full.outputs.results-path != ''
         env:
@@ -134,6 +167,7 @@ jobs:
         run: dogfood/payload/stack.sh stop
 
   research-shim:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     services:
@@ -153,6 +187,26 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The CLI first, before any server or third-party code runs in this job: the only step with the token.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - id: cliref
+        name: Choose the CLI commit
+        env:
+          INPUT_REF: ${{ inputs.cli-ref }}
+        run: dogfood/cli-ref.sh
+      - name: Check out mcp-writecheck
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: isokron-ai/mcp-write-safety
+          ref: ${{ steps.cliref.outputs.ref }}
+          token: ${{ secrets.MWS_CLI_TOKEN }}
+          path: mws-cli
+          sparse-checkout: packages/writecheck
+          persist-credentials: false
+      - name: Build mcp-writecheck
+        run: dogfood/build-cli.sh
       - name: Check out the experiment
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -184,11 +238,11 @@ jobs:
           manifest: dogfood/payload/writecheck.research-shim.yaml
           mode: plan
           artifact-name: payload-research-shim-plan
-          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+          cli-path: ${{ env.MWSC_CLI_PATH }}
       - name: Compare the plan hash with the accepted one
         env:
           SEEN: ${{ steps.plan.outputs.plan-hash }}
-        run: dogfood/check-plan-hash.sh "$PLAN_HASH" "$SEEN"
+        run: dogfood/check-plan-hash.sh "$PLAN_HASH" "$SEEN" research-shim
       - name: Catalog
         uses: ./
         with:
@@ -196,7 +250,7 @@ jobs:
           mode: catalog
           fail-on: any
           artifact-name: payload-research-shim-catalog
-          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+          cli-path: ${{ env.MWSC_CLI_PATH }}
       - id: full
         name: Full run
         uses: ./
@@ -205,9 +259,9 @@ jobs:
           mode: full
           fail-on: none
           confirm-target: dogfood-payload-research-v2.1-shim
-          plan-hash: ${{ env.PLAN_HASH }}
+          plan-hash: ${{ env.ACCEPTED_PLAN_HASH }}
           artifact-name: payload-research-shim-full
-          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+          cli-path: ${{ env.MWSC_CLI_PATH }}
       - name: Compare the violated records with the known ones
         if: always() && steps.full.outputs.results-path != ''
         env:
@@ -244,6 +298,26 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The CLI first, before any server or third-party code runs in this job: the only step with the token.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - id: cliref
+        name: Choose the CLI commit
+        env:
+          INPUT_REF: ${{ inputs.cli-ref }}
+        run: dogfood/cli-ref.sh
+      - name: Check out mcp-writecheck
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: isokron-ai/mcp-write-safety
+          ref: ${{ steps.cliref.outputs.ref }}
+          token: ${{ secrets.MWS_CLI_TOKEN }}
+          path: mws-cli
+          sparse-checkout: packages/writecheck
+          persist-credentials: false
+      - name: Build mcp-writecheck
+        run: dogfood/build-cli.sh
       - name: Check out the experiment
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -273,11 +347,11 @@ jobs:
           manifest: dogfood/payload/writecheck.vendor.yaml
           mode: plan
           artifact-name: payload-vendor-plan
-          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+          cli-path: ${{ env.MWSC_CLI_PATH }}
       - name: Compare the plan hash with the accepted one
         env:
           SEEN: ${{ steps.plan.outputs.plan-hash }}
-        run: dogfood/check-plan-hash.sh "$PLAN_HASH" "$SEEN"
+        run: dogfood/check-plan-hash.sh "$PLAN_HASH" "$SEEN" vendor
       - id: full
         name: Full run
         uses: ./
@@ -286,9 +360,9 @@ jobs:
           mode: full
           fail-on: none
           confirm-target: dogfood-payload-vendor-3.93.0
-          plan-hash: ${{ env.PLAN_HASH }}
+          plan-hash: ${{ env.ACCEPTED_PLAN_HASH }}
           artifact-name: payload-vendor-full
-          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+          cli-path: ${{ env.MWSC_CLI_PATH }}
       - name: Check the documents the tester does not create
         if: always() && steps.full.outcome != 'skipped'
         run: node dogfood/payload/snap.mjs --compare "$RUNNER_TEMP/snap-before.json"
