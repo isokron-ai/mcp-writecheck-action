@@ -26,6 +26,11 @@ on:
         description: tiny-tracker commit of isokron-ai/mcp-write-safety (full SHA). Empty for the pinned one.
         required: false
         default: ''
+      manifest-from-cli:
+        description: Use the tiny-tracker manifest of the cli-ref commit (needs cli-ref) instead of dogfood/tiny-tracker/writecheck.yaml.
+        type: boolean
+        required: false
+        default: false
       plan-hashes:
         description: "Accepted plan hashes for that CLI, after reading the plans: space-separated job=hash pairs (jobs: clean, defects)."
         required: false
@@ -49,6 +54,7 @@ env:
   # tiny-tracker examples/tiny-tracker-resync (PR #7 of isokron-ai/mcp-write-safety).
   TT_REF: ${{ inputs.tiny-tracker-ref || 'b9265fe3d768a40f316837cf31528e856ff809d8' }}
   PLAN_HASHES: ${{ inputs.plan-hashes }}
+  TT_MANIFEST: dogfood/tiny-tracker/writecheck.yaml
   # The same backend URL in every step, so that every step arrives at the same plan hash.
   TRACKER_BACKEND_URL: http://127.0.0.1:4610
 
@@ -83,13 +89,33 @@ jobs:
       - name: Build tiny-tracker
         working-directory: tt/examples/tiny-tracker
         run: npm ci --ignore-scripts --no-audit --no-fund && npm run build
+      - name: The CLI commit's own tiny-tracker manifest (manifest-from-cli)
+        if: inputs.manifest-from-cli
+        env:
+          NAME: cli-ref
+          REF: ${{ inputs.cli-ref }}
+        run: dogfood/check-ref.sh
+      - name: Check out that manifest
+        if: inputs.manifest-from-cli
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: isokron-ai/mcp-write-safety
+          ref: ${{ inputs.cli-ref }}
+          token: ${{ secrets.MWS_CLI_TOKEN }}
+          path: mwsm
+          sparse-checkout: examples/tiny-tracker/writecheck.yaml
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Use it
+        if: inputs.manifest-from-cli
+        run: dogfood/tiny-tracker/manifest-from-cli.sh
       - name: Start the tiny-tracker backend
         run: dogfood/tiny-tracker/backend.sh start
       - id: plan
         name: Plan
         uses: ./
         with:
-          manifest: dogfood/tiny-tracker/writecheck.yaml
+          manifest: ${{ env.TT_MANIFEST }}
           mode: plan
           artifact-name: tiny-tracker-clean-plan
           cli-ref: ${{ inputs.cli-ref }}
@@ -101,7 +127,7 @@ jobs:
       - name: Catalog
         uses: ./
         with:
-          manifest: dogfood/tiny-tracker/writecheck.yaml
+          manifest: ${{ env.TT_MANIFEST }}
           mode: catalog
           fail-on: must
           artifact-name: tiny-tracker-clean-catalog
@@ -110,7 +136,7 @@ jobs:
       - name: Full run
         uses: ./
         with:
-          manifest: dogfood/tiny-tracker/writecheck.yaml
+          manifest: ${{ env.TT_MANIFEST }}
           mode: full
           fail-on: must
           confirm-target: tiny-tracker
@@ -153,13 +179,33 @@ jobs:
       - name: Build tiny-tracker
         working-directory: tt/examples/tiny-tracker
         run: npm ci --ignore-scripts --no-audit --no-fund && npm run build
+      - name: The CLI commit's own tiny-tracker manifest (manifest-from-cli)
+        if: inputs.manifest-from-cli
+        env:
+          NAME: cli-ref
+          REF: ${{ inputs.cli-ref }}
+        run: dogfood/check-ref.sh
+      - name: Check out that manifest
+        if: inputs.manifest-from-cli
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: isokron-ai/mcp-write-safety
+          ref: ${{ inputs.cli-ref }}
+          token: ${{ secrets.MWS_CLI_TOKEN }}
+          path: mwsm
+          sparse-checkout: examples/tiny-tracker/writecheck.yaml
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Use it
+        if: inputs.manifest-from-cli
+        run: dogfood/tiny-tracker/manifest-from-cli.sh
       - name: Start the tiny-tracker backend
         run: dogfood/tiny-tracker/backend.sh start
       - id: plan
         name: Plan
         uses: ./
         with:
-          manifest: dogfood/tiny-tracker/writecheck.yaml
+          manifest: ${{ env.TT_MANIFEST }}
           mode: plan
           artifact-name: tiny-tracker-defects-plan
           cli-ref: ${{ inputs.cli-ref }}
@@ -173,7 +219,7 @@ jobs:
         continue-on-error: true
         uses: ./
         with:
-          manifest: dogfood/tiny-tracker/writecheck.yaml
+          manifest: ${{ env.TT_MANIFEST }}
           mode: full
           fail-on: must
           confirm-target: tiny-tracker
