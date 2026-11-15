@@ -20,12 +20,23 @@
 name: "dogfood: sea-lite"
 
 on:
-  # TEMPORARY, dropped before the PR: workflow_dispatch needs the file on main.
-  push:
-    branches: ['dogfood/sea-lite']
   workflow_dispatch:
+    inputs:
+      cli-ref:
+        description: mcp-writecheck commit to test with (full 40-character SHA). Empty for the action's default.
+        required: false
+        default: ''
+      plan-hashes:
+        description: "Accepted plan hashes for that CLI, after reading the plans: space-separated job=hash pairs (job names as in this file)."
+        required: false
+        default: ''
   schedule:
     - cron: '53 3 * * *'
+  pull_request:
+    paths: ['dogfood/sea-lite/**', 'dogfood/*.sh', '.github/workflows/dogfood-sea-lite.yml', 'action.yml', 'contract.mjs', 'src/**']
+  push:
+    branches: [main]
+    paths: ['dogfood/sea-lite/**', 'dogfood/*.sh', '.github/workflows/dogfood-sea-lite.yml', 'action.yml', 'contract.mjs', 'src/**']
 
 permissions:
   contents: read
@@ -35,11 +46,13 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  PLAN_HASHES: ${{ inputs.plan-hashes }}
   # isokron-ai/sea-lite main (0.7.2).
   SEA_LITE_REF: b536cc18d7eeb43a16da3d3bb1f88edfa6df3eb3
 
 jobs:
   sea-lite:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -48,6 +61,26 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The CLI first, before any server or third-party code runs in this job: the only step with the token.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - id: cliref
+        name: Choose the CLI commit
+        env:
+          INPUT_REF: ${{ inputs.cli-ref }}
+        run: dogfood/cli-ref.sh
+      - name: Check out mcp-writecheck
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: isokron-ai/mcp-write-safety
+          ref: ${{ steps.cliref.outputs.ref }}
+          token: ${{ secrets.MWS_CLI_TOKEN }}
+          path: mws-cli
+          sparse-checkout: packages/writecheck
+          persist-credentials: false
+      - name: Build mcp-writecheck
+        run: dogfood/build-cli.sh
       - name: Check out sea-lite
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -72,11 +105,11 @@ jobs:
           manifest: dogfood/sea-lite/writecheck.yaml
           mode: plan
           artifact-name: sea-lite-plan
-          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+          cli-path: ${{ env.MWSC_CLI_PATH }}
       - name: Compare the plan hash with the accepted one
         env:
           SEEN: ${{ steps.plan.outputs.plan-hash }}
-        run: dogfood/check-plan-hash.sh "$PLAN_HASH" "$SEEN"
+        run: dogfood/check-plan-hash.sh "$PLAN_HASH" "$SEEN" sea-lite
       - name: Catalog
         uses: ./
         with:
@@ -84,7 +117,7 @@ jobs:
           mode: catalog
           fail-on: must
           artifact-name: sea-lite-catalog
-          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+          cli-path: ${{ env.MWSC_CLI_PATH }}
       - name: Full run
         uses: ./
         with:
@@ -92,11 +125,12 @@ jobs:
           mode: full
           fail-on: must
           confirm-target: sea-lite-dogfood
-          plan-hash: ${{ env.PLAN_HASH }}
+          plan-hash: ${{ env.ACCEPTED_PLAN_HASH }}
           artifact-name: sea-lite-full
-          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+          cli-path: ${{ env.MWSC_CLI_PATH }}
 
   cli-known-bugs:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
@@ -105,6 +139,26 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The CLI first, before any server or third-party code runs in this job: the only step with the token.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - id: cliref
+        name: Choose the CLI commit
+        env:
+          INPUT_REF: ${{ inputs.cli-ref }}
+        run: dogfood/cli-ref.sh
+      - name: Check out mcp-writecheck
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: isokron-ai/mcp-write-safety
+          ref: ${{ steps.cliref.outputs.ref }}
+          token: ${{ secrets.MWS_CLI_TOKEN }}
+          path: mws-cli
+          sparse-checkout: packages/writecheck
+          persist-credentials: false
+      - name: Build mcp-writecheck
+        run: dogfood/build-cli.sh
       - name: Check out sea-lite
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -129,11 +183,11 @@ jobs:
           manifest: dogfood/sea-lite/writecheck-claim.yaml
           mode: plan
           artifact-name: sea-lite-known-bugs-plan
-          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+          cli-path: ${{ env.MWSC_CLI_PATH }}
       - name: Compare the plan hash with the accepted one
         env:
           SEEN: ${{ steps.plan.outputs.plan-hash }}
-        run: dogfood/check-plan-hash.sh "$PLAN_HASH" "$SEEN"
+        run: dogfood/check-plan-hash.sh "$PLAN_HASH" "$SEEN" cli-known-bugs
       - id: full
         name: Full run (known CLI false results expected)
         continue-on-error: true
@@ -143,9 +197,9 @@ jobs:
           mode: full
           fail-on: must
           confirm-target: sea-lite-dogfood
-          plan-hash: ${{ env.PLAN_HASH }}
+          plan-hash: ${{ env.ACCEPTED_PLAN_HASH }}
           artifact-name: sea-lite-known-bugs-full
-          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+          cli-path: ${{ env.MWSC_CLI_PATH }}
       - name: Only the known CLI false results may be violated
         env:
           OUTCOME: ${{ steps.full.outcome }}
