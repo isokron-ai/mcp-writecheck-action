@@ -1,0 +1,10 @@
+# Violated MUST records kronicle-lite is known to give with this manifest, one per line:
+#   <requirement> <resource>:<tool> <scenario>
+# dogfood/expect-violations.mjs fails the job on a violated MUST record not listed here, and
+# reports a listed one that no longer appears (remove it, so that a return is caught).
+# Both are kronicle-lite bugs to fix; the full run's job summary gives each record's reason.
+#
+# put_document answers a reused idempotency key with changed arguments with the first result.
+MWS-RETRY-2 document:put_document idempotency-replay
+# A failed all-or-nothing apply is answered as a normal result, not as a tool execution error.
+MWS-ATOM-1 document-apply:apply multi-item

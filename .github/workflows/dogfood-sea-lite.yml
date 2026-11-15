@@ -13,9 +13,11 @@
 # When sea-lite, a manifest or the CLI pin changes, the full run is refused at the hash check: read
 # the new plan in the plan step's summary, then update the hash.
 #
-# Security: workflow_dispatch and schedule only (no pull_request, never pull_request_target), so a
-# fork never gets MWS_CLI_TOKEN, which is read-only on isokron-ai/mcp-write-safety and is used for
-# the CLI fetch only (sea-lite is public). Third-party actions are pinned by full SHA.
+# Security: no pull_request_target. A pull request from a fork runs nothing here (each job's `if:`), so
+# a fork never gets MWS_CLI_TOKEN (read-only on isokron-ai/mcp-write-safety), which only the
+# "Check out mcp-writecheck" step uses, before any server code is installed or started; the action
+# gets the built CLI through cli-path. Third-party actions are pinned by full SHA.
+# sea-lite is public and checked out without a token.
 
 name: "dogfood: sea-lite"
 

@@ -4,8 +4,10 @@
 #   dogfood/payload/stack.sh start research|vendor   writes the app's .env (random PAYLOAD_SECRET), starts `next dev`
 #                                                    on 127.0.0.1:4960 and waits until /api answers
 #   dogfood/payload/stack.sh shim                    starts dogfood/payload/shim.mjs on 127.0.0.1:4961 in front of the app
+#   dogfood/payload/stack.sh pg                      starts Postgres (pinned image) on 127.0.0.1:4900 with a password made
+#                                                    here; exports DATABASE_URL (masked) through GITHUB_ENV
 #   dogfood/payload/stack.sh stop
-# Env: DATABASE_URL (Postgres service container, loopback). Nothing secret is printed.
+# Nothing secret is printed.
 set -euo pipefail
 EXP=$PWD/exp/harness
 PORT=4960
@@ -39,6 +41,20 @@ case "${1:?build, start or stop}" in
     done
     echo "::error::the app did not answer in 6 minutes"; tail -50 "$LOG"; exit 1
     ;;
+  pg)
+    pw=$(openssl rand -hex 24)
+    echo "::add-mask::$pw"
+    url="postgresql://payload:$pw@127.0.0.1:4900/payload"
+    echo "::add-mask::$url"
+    POSTGRES_PASSWORD=$pw docker run -d --name dogfood-payload-pg -p 127.0.0.1:4900:5432 \
+      -e POSTGRES_USER=payload -e POSTGRES_DB=payload -e POSTGRES_PASSWORD \
+      postgres:17.6-alpine@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94 > /dev/null
+    for _ in $(seq 1 60); do
+      docker exec dogfood-payload-pg pg_isready -U payload -d payload -h 127.0.0.1 > /dev/null 2>&1 && { echo "Postgres up on 4900"; echo "DATABASE_URL=$url" >> "$GITHUB_ENV"; exit 0; }
+      sleep 1
+    done
+    echo "::error::Postgres did not become ready"; docker logs dogfood-payload-pg 2>&1 | tail -20; exit 1
+    ;;
   shim)
     nohup node dogfood/payload/shim.mjs --listen 4961 --upstream "http://127.0.0.1:$PORT" > "${RUNNER_TEMP:-/tmp}/payload-shim.log" 2>&1 &
     echo $! > "$PIDFILE.shim"
@@ -50,5 +66,6 @@ case "${1:?build, start or stop}" in
     ;;
   stop)
     for f in "$PIDFILE.shim" "$PIDFILE"; do [ -f "$f" ] && kill "$(cat "$f")" 2>/dev/null || true; done
+    docker rm -f dogfood-payload-pg > /dev/null 2>&1 || true
     ;;
 esac

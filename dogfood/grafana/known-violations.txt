@@ -1,11 +1,10 @@
 # Violated MUST records the research build is known to give, one per line:
 #   <requirement> <resource>:<tool> <scenario>
-# dogfood/grafana/expect-violations.mjs fails the job on a violated MUST record not listed here, and
+# dogfood/expect-violations.mjs fails the job on a violated MUST record not listed here, and
 # reports a listed one that no longer appears (remove it, so that a return is caught).
-# Each is a real behaviour of the research build or of Grafana, noted in IsoKron's server findings:
+# The full run's job summary gives each record's reason. Grouped by requirement:
 #
-# Error texts from the argument decoder that do not name the argument (several tools; on
-# update_dashboard, the research build's new optional expectedVersion argument).
+# MWS-IN-4
 MWS-IN-4 dashboard:get_dashboard_by_uid schema-probes
 MWS-IN-4 dashboard:update_dashboard schema-probes
 MWS-IN-4 dashboard-full:update_dashboard schema-probes
@@ -17,17 +16,14 @@ MWS-IN-4 alert-rule-alt:alerting_rules_read schema-probes
 MWS-IN-4 alert-rule-alt:alerting_rules_write schema-probes
 MWS-IN-4 annotation:get_annotations schema-probes
 MWS-IN-4 annotation:update_annotation schema-probes
-# rule_type outside its declared enumeration is accepted.
+# MWS-IN-3
 MWS-IN-3 alert-rule:alerting_rules_read schema-probes
 MWS-IN-3 alert-rule:alerting_rules_write schema-probes
 MWS-IN-3 alert-rule-alt:alerting_rules_read schema-probes
 MWS-IN-3 alert-rule-alt:alerting_rules_write schema-probes
-# A v2 dashboard saved whole from a stale read overwrites another writer's change. The research
-# build's guard is the optional expectedVersion, which this manifest cannot send (the read gives no
-# version for a v2 dashboard).
+# MWS-CONC-2
 MWS-CONC-2 dashboard-v2:update_dashboard stale-write
-# A partial alert-rule update reads the rule and writes it back whole, so a concurrent change to
-# another field is lost (the platform offers only a whole-rule write).
+# MWS-CONC-3
 MWS-CONC-3 alert-rule:alerting_rules_write barrier-pairs
 MWS-CONC-3 alert-rule:alerting_rules_write held-request
 MWS-CONC-3 alert-rule-alt:alerting_rules_write barrier-pairs

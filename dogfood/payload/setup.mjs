@@ -9,6 +9,7 @@ import { appendFileSync } from 'node:fs';
 const BASE = process.env.PAYLOAD_URL ?? 'http://127.0.0.1:4960';
 if (!/^http:\/\/127\.0\.0\.1:\d+$/.test(BASE)) throw new Error('PAYLOAD_URL must be a loopback URL');
 const pass = `Pw-${randomBytes(18).toString('base64url')}`;
+if (process.env.GITHUB_ACTIONS === 'true') console.log(`::add-mask::${pass}`);
 const j = async (method, path, body, token) => {
   const r = await fetch(`${BASE}${path}`, { method, headers: { 'content-type': 'application/json', ...(token ? { authorization: `JWT ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) });
   let b = null; try { b = await r.json(); } catch { /* empty */ }
@@ -40,6 +41,9 @@ await mk('posts', { title: 'mwsv-bystander-post-1', slug: 'mwsv-bystander-post-1
 await mk('posts', { title: 'mwsv-bystander-post-2', slug: 'mwsv-bystander-post-2' });
 const out = process.env.GITHUB_ENV;
 if (out) {
+  // The login token comes from the server: refuse anything but a JWT before it reaches GITHUB_ENV.
+  if (!/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(String(a.token))) throw new Error('the login token has an unexpected form');
+  if (!/^[0-9a-f-]{36}$/.test(key)) throw new Error('the MCP key has an unexpected form');
   for (const v of [key, a.token]) console.log(`::add-mask::${v}`);
   appendFileSync(out, `MWSV_MCP_KEY=${key}\nMWSV_JWT_A=${a.token}\n`);
 }

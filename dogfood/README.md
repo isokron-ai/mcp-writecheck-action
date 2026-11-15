@@ -16,8 +16,8 @@ it (`plan-hashes`, `job=hash` pairs).
 
 Rules every dogfood workflow follows:
 
-- Triggers: `workflow_dispatch`, a nightly `schedule`, and for the light workflows `pull_request`
-  and `push` to `main` on their own paths. Never `pull_request_target`. A pull request from a fork
+- Triggers: `workflow_dispatch`, a nightly `schedule`, and `pull_request` and `push` to `main` on
+  each workflow's own paths (writesafe: dispatch only, see below). Never `pull_request_target`. A pull request from a fork
   runs no job (each job's `if:` checks that the head is this repository), so a fork never gets the
   secret. Standard GitHub-hosted runners only, never self-hosted.
 - `permissions: contents: read`; third-party actions pinned by full commit SHA; `timeout-minutes`

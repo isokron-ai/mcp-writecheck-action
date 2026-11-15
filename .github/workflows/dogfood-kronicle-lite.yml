@@ -9,10 +9,11 @@
 # a plan job's output). When kronicle-lite, the manifest or the CLI pin changes, the full run is
 # refused with a hash mismatch: read the new plan in the plan step's summary and update the hash.
 #
-# Security: workflow_dispatch and schedule only (no pull_request, never pull_request_target), so a
-# fork never gets MWS_CLI_TOKEN (read-only on isokron-ai/mcp-write-safety, used for the CLI fetch
-# only). kronicle-lite is public and checked out without a token. Third-party actions are pinned
-# by full SHA.
+# Security: no pull_request_target. A pull request from a fork runs nothing here (each job's `if:`), so
+# a fork never gets MWS_CLI_TOKEN (read-only on isokron-ai/mcp-write-safety), which only the
+# "Check out mcp-writecheck" step uses, before any server code is installed or started; the action
+# gets the built CLI through cli-path. Third-party actions are pinned by full SHA.
+# kronicle-lite is public and checked out without a token.
 
 name: "dogfood: kronicle-lite"
 
@@ -30,10 +31,10 @@ on:
   schedule:
     - cron: '41 3 * * *'
   pull_request:
-    paths: ['dogfood/kronicle-lite/**', 'dogfood/*.sh', '.github/workflows/dogfood-kronicle-lite.yml', 'action.yml', 'contract.mjs', 'src/**']
+    paths: ['dogfood/kronicle-lite/**', 'dogfood/*.sh', 'dogfood/*.mjs', '.github/workflows/dogfood-kronicle-lite.yml', 'action.yml', 'contract.mjs', 'src/**']
   push:
     branches: [main]
-    paths: ['dogfood/kronicle-lite/**', 'dogfood/*.sh', '.github/workflows/dogfood-kronicle-lite.yml', 'action.yml', 'contract.mjs', 'src/**']
+    paths: ['dogfood/kronicle-lite/**', 'dogfood/*.sh', 'dogfood/*.mjs', '.github/workflows/dogfood-kronicle-lite.yml', 'action.yml', 'contract.mjs', 'src/**']
 
 permissions:
   contents: read
@@ -114,13 +115,22 @@ jobs:
           fail-on: must
           artifact-name: kronicle-lite-catalog
           cli-path: ${{ env.MWSC_CLI_PATH }}
-      - name: Full run
+      # fail-on: none, and the next step compares the violated MUST records with the known ones; the
+      # action still fails the step on its own safety rules (lost bystanders, unfinished clean-up, a
+      # run that did not complete).
+      - id: full
+        name: Full run
         uses: ./
         with:
           manifest: dogfood/kronicle-lite/writecheck.yaml
           mode: full
-          fail-on: must
+          fail-on: none
           confirm-target: kronicle-lite-dogfood
           plan-hash: ${{ env.ACCEPTED_PLAN_HASH }}
           artifact-name: kronicle-lite-full
           cli-path: ${{ env.MWSC_CLI_PATH }}
+      - name: Violated MUST records against the known ones
+        if: always() && steps.full.outputs.results-path != ''
+        env:
+          RESULTS: ${{ steps.full.outputs.results-path }}
+        run: node dogfood/expect-violations.mjs dogfood/kronicle-lite/known-violations.txt "$RESULTS"

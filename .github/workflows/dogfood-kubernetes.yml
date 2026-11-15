@@ -11,9 +11,11 @@
 # the manifest or the CLI pin changes, the full run is refused: read the new plan in the plan step's summary and update
 # PLAN_HASH.
 #
-# Security: workflow_dispatch and schedule only (never pull_request_target), so a fork never gets MWS_CLI_TOKEN, which
-# is read-only on isokron-ai/mcp-write-safety and used only for the CLI fetch. Third-party actions are pinned by full
-# SHA. The cluster's only credential is a service-account token minted in the job, written to a file and masked.
+# Security: no pull_request_target. A pull request from a fork runs nothing here (each job's `if:`), so
+# a fork never gets MWS_CLI_TOKEN (read-only on isokron-ai/mcp-write-safety), which only the
+# "Check out mcp-writecheck" step uses, before any server code is installed or started; the action
+# gets the built CLI through cli-path. Third-party actions are pinned by full SHA.
+# The cluster's only credential is a service-account token minted in the job, written to a file and masked.
 
 name: "dogfood: kubernetes"
 

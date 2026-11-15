@@ -13,10 +13,11 @@
 # a plan job's output). When the fork commit, the manifest, Grafana or the CLI pin changes, the hash
 # check fails: read the new plan in the plan step's summary and update PLAN_HASH.
 #
-# Security: workflow_dispatch and schedule only (no pull_request, never pull_request_target), so a
-# fork of this repository never gets MWS_CLI_TOKEN, which is read-only and used only for the CLI
-# fetch. The Grafana admin password and the service-account token are made in the job and masked.
-# Third-party actions are pinned by full SHA.
+# Security: no pull_request_target. A pull request from a fork runs nothing here (each job's `if:`), so
+# a fork never gets MWS_CLI_TOKEN (read-only on isokron-ai/mcp-write-safety), which only the
+# "Check out mcp-writecheck" step uses, before any server code is installed or started; the action
+# gets the built CLI through cli-path. Third-party actions are pinned by full SHA.
+# The Grafana admin password and the service-account token are made in the job, checked and masked.
 
 name: "dogfood: grafana"
 
@@ -34,10 +35,10 @@ on:
   schedule:
     - cron: '31 4 * * *'
   pull_request:
-    paths: ['dogfood/grafana/**', 'dogfood/*.sh', '.github/workflows/dogfood-grafana.yml', 'action.yml', 'contract.mjs', 'src/**']
+    paths: ['dogfood/grafana/**', 'dogfood/*.sh', 'dogfood/*.mjs', '.github/workflows/dogfood-grafana.yml', 'action.yml', 'contract.mjs', 'src/**']
   push:
     branches: [main]
-    paths: ['dogfood/grafana/**', 'dogfood/*.sh', '.github/workflows/dogfood-grafana.yml', 'action.yml', 'contract.mjs', 'src/**']
+    paths: ['dogfood/grafana/**', 'dogfood/*.sh', 'dogfood/*.mjs', '.github/workflows/dogfood-grafana.yml', 'action.yml', 'contract.mjs', 'src/**']
 
 permissions:
   contents: read
@@ -95,7 +96,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: srv-grafana/go.mod
-          cache-dependency-path: srv-grafana/go.sum
+          cache: false
       - name: Build the research build
         working-directory: srv-grafana
         env:
@@ -149,7 +150,7 @@ jobs:
         if: always() && steps.full.outputs.results-path != ''
         env:
           RESULTS: ${{ steps.full.outputs.results-path }}
-        run: node dogfood/grafana/expect-violations.mjs dogfood/grafana/known-violations.txt "$RESULTS"
+        run: node dogfood/expect-violations.mjs dogfood/grafana/known-violations.txt "$RESULTS"
       - name: Snapshot after, and compare
         if: always() && steps.plan.outcome == 'success'
         run: |

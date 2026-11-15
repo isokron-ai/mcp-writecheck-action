@@ -3,7 +3,7 @@
 #
 #   research  isokron-ai/payload-mcp-writepath-experiment at a pinned commit: the sandbox Payload
 #             3.93.0 app (harness/app) with the research build v2.1 of @payloadcms/plugin-mcp
-#             swapped in by the experiment's own build script, on Postgres in a service container.
+#             swapped in by the experiment's own build script, on Postgres in a container started by a step.
 #             plan, catalog, then a full run. The full run uses fail-on: none, and the job compares
 #             its violated records with dogfood/payload/expected-violations.research.txt: a new
 #             violated record, or a known one that no longer appears, fails the job. A run that does
@@ -20,9 +20,10 @@
 # experiment commit, the manifest or the CLI pin changes, the hash check fails: read the new plan in
 # the plan step's summary and update PLAN_HASH.
 #
-# Security: workflow_dispatch and schedule only, so a fork never gets MWS_CLI_TOKEN (read-only on
-# isokron-ai/mcp-write-safety, used only for the CLI fetch). Every credential of the app is
-# generated in the job and masked. Third-party actions are pinned by full SHA.
+# Security: no pull_request_target. A pull request from a fork runs nothing here (each job's `if:`), so
+# a fork never gets MWS_CLI_TOKEN (read-only on isokron-ai/mcp-write-safety), which only the
+# "Check out mcp-writecheck" step uses, before anything else is installed or started. Every
+# credential of the app and of Postgres is generated in the job and masked. Third-party actions are pinned by full SHA.
 
 name: "dogfood: payload"
 
@@ -64,19 +65,8 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    services:
-      postgres:
-        image: postgres:17.6-alpine@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94
-        env:
-          POSTGRES_USER: payload
-          POSTGRES_DB: payload
-          POSTGRES_PASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}-pg
-        ports: ['127.0.0.1:4900:5432']
-        options: >-
-          --health-cmd "pg_isready -U payload -d payload" --health-interval 3s --health-timeout 3s --health-retries 30
     env:
       PLAN_HASH: 94ca73397d82335f
-      DATABASE_URL: postgresql://payload:ci-${{ github.run_id }}-${{ github.run_attempt }}-pg@127.0.0.1:4900/payload
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -117,6 +107,8 @@ jobs:
         run: npm install --global --no-audit --no-fund pnpm@9.15.9
       - name: Build the research app
         run: dogfood/payload/stack.sh build research
+      - name: Start Postgres (password made here, masked)
+        run: dogfood/payload/stack.sh pg
       - name: Start the app
         run: dogfood/payload/stack.sh start research
       - name: Seed users, the MCP key, the fixed rows and the bystanders
@@ -170,19 +162,8 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    services:
-      postgres:
-        image: postgres:17.6-alpine@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94
-        env:
-          POSTGRES_USER: payload
-          POSTGRES_DB: payload
-          POSTGRES_PASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}-pg
-        ports: ['127.0.0.1:4900:5432']
-        options: >-
-          --health-cmd "pg_isready -U payload -d payload" --health-interval 3s --health-timeout 3s --health-retries 30
     env:
       PLAN_HASH: 8ff170819dbd5f0d
-      DATABASE_URL: postgresql://payload:ci-${{ github.run_id }}-${{ github.run_attempt }}-pg@127.0.0.1:4900/payload
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -223,6 +204,8 @@ jobs:
         run: npm install --global --no-audit --no-fund pnpm@9.15.9
       - name: Build the research app
         run: dogfood/payload/stack.sh build research
+      - name: Start Postgres (password made here, masked)
+        run: dogfood/payload/stack.sh pg
       - name: Start the app
         run: dogfood/payload/stack.sh start research
       - name: Start the shim
@@ -280,20 +263,9 @@ jobs:
     if: false
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    services:
-      postgres:
-        image: postgres:17.6-alpine@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94
-        env:
-          POSTGRES_USER: payload
-          POSTGRES_DB: payload
-          POSTGRES_PASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}-pg
-        ports: ['127.0.0.1:4900:5432']
-        options: >-
-          --health-cmd "pg_isready -U payload -d payload" --health-interval 3s --health-timeout 3s --health-retries 30
     env:
       # Not accepted yet: read the vendor plan before pinning its hash.
       PLAN_HASH: 'none'
-      DATABASE_URL: postgresql://payload:ci-${{ github.run_id }}-${{ github.run_attempt }}-pg@127.0.0.1:4900/payload
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -334,6 +306,8 @@ jobs:
         run: npm install --global --no-audit --no-fund pnpm@9.15.9
       - name: Install the app (upstream plugin, unmodified)
         run: dogfood/payload/stack.sh build vendor
+      - name: Start Postgres (password made here, masked)
+        run: dogfood/payload/stack.sh pg
       - name: Start the app
         run: dogfood/payload/stack.sh start vendor
       - name: Seed users, the MCP key, the fixed rows and the bystanders

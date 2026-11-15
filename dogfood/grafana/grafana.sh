@@ -36,8 +36,11 @@ case "${1:?start, fixtures, snap or stop}" in
     done
     [ "$(curl -s -o /dev/null -w '%{http_code}' "$G/api/health")" = 200 ] || { echo "::error::Grafana did not become healthy"; docker logs --tail 50 "$name"; exit 1; }
     id=$(api POST /api/serviceaccounts '{"name":"mwsv-editor","role":"Editor"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+    [[ $id =~ ^[0-9]+$ ]] || { echo "::error::unexpected service account id"; exit 1; }
     token=$(api POST "/api/serviceaccounts/$id/tokens" '{"name":"mwsv-editor-token"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["key"])')
     echo "::add-mask::$token"
+    # A value from Grafana: refuse anything but a service-account token before it reaches GITHUB_ENV.
+    [[ $token =~ ^glsa_[A-Za-z0-9_]+$ ]] || { echo "::error::unexpected token format"; exit 1; }
     echo "GRAFANA_SERVICE_ACCOUNT_TOKEN=$token" >> "$GITHUB_ENV"
     echo "Grafana up on $port; Editor service account made"
     ;;

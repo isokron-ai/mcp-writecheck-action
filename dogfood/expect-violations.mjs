@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Compares the violated MUST records of a full run with a list of known ones.
-//   node dogfood/grafana/expect-violations.mjs <known-violations.txt> <results folder>
+//   node dogfood/expect-violations.mjs <known-violations.txt> <results folder>
 // Fails (exit 1) on a violated MUST record that is not in the list. A listed record that is no
 // longer violated is reported as a notice, so that the list can be shortened and a return caught.
 // The full run itself uses fail-on: none, so that this step decides; the action still fails the
