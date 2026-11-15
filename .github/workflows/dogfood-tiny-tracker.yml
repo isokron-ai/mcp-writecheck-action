@@ -5,9 +5,13 @@
 #   defects  the same server with every teaching defect on (TRACKER_DEFECTS=all). The action must FAIL
 #            this job's run step; the job itself passes only when it does, with violated records.
 #   defect   a matrix, one tiny-tracker defect per cell (dogfood/tiny-tracker/defects.json): each cell
-#            expects a violated record of its defect's requirement, or is a known miss of the CLI
+#            expects a violated record of its defect's requirement (for a review-only clause, a self-attested
+#            record answered no), or is a known miss of the CLI
 #            (an expected failure, flipped when the CLI detects it). Pinned CLI only: a cli-ref
 #            dispatch skips it (its plans would need one accepted hash per cell).
+#   traps    known CLI bugs as expected failures, flipped when the CLI is fixed: a backend killed
+#            during the run (reported complete with exit 0), and a run in which every set-up fails
+#            (exit 0; manifest dogfood/tiny-tracker/writecheck-setup-fails.yaml). Pinned CLI only.
 #
 # The plan hashes below were read and accepted by a person (the action's rule: never take a hash
 # from a plan job's output). When tiny-tracker, the manifest or the CLI pin changes, the full run is
@@ -332,6 +336,112 @@ jobs:
           EXPECT: ${{ matrix.expect }}
           RESULTS: ${{ steps.full.outputs.results-path }}
         run: node dogfood/tiny-tracker/expect-defect.mjs "$RESULTS"
+      - name: Stop the backend
+        if: always()
+        run: dogfood/tiny-tracker/backend.sh stop
+
+  traps:
+    if: inputs.cli-ref == '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The tiny-tracker ref is a full commit SHA
+        env:
+          NAME: tiny-tracker-ref
+          REF: ${{ env.TT_REF }}
+        run: dogfood/check-ref.sh
+      - name: Check out tiny-tracker
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: isokron-ai/mcp-write-safety
+          ref: ${{ env.TT_REF }}
+          token: ${{ secrets.MWS_CLI_TOKEN }}
+          path: tt
+          sparse-checkout: examples/tiny-tracker
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Build tiny-tracker
+        working-directory: tt/examples/tiny-tracker
+        run: npm ci --ignore-scripts --no-audit --no-fund && npm run build
+      # Trap 1: the backend crashes during the run.
+      - name: Start the tiny-tracker backend
+        run: dogfood/tiny-tracker/backend.sh start
+      - id: plan-crash
+        name: Plan (backend-crash)
+        uses: ./
+        with:
+          manifest: dogfood/tiny-tracker/writecheck.yaml
+          mode: plan
+          artifact-name: tiny-tracker-trap-crash-plan
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+      - name: Compare the plan hash with the accepted one
+        env:
+          SEEN: ${{ steps.plan-crash.outputs.plan-hash }}
+        run: dogfood/check-plan-hash.sh 1cd00c43789a075f "$SEEN"
+      - name: Arm the crash (kills the backend once the run is under way)
+        run: nohup dogfood/tiny-tracker/crash-backend.sh mwsc-crash > "$RUNNER_TEMP/crash.log" 2>&1 &
+      - id: crash
+        name: Full run, backend killed during it
+        continue-on-error: true
+        uses: ./
+        with:
+          manifest: dogfood/tiny-tracker/writecheck.yaml
+          mode: full
+          fail-on: none
+          confirm-target: tiny-tracker
+          plan-hash: ${{ env.ACCEPTED_PLAN_HASH }}
+          results-dir: mwsc-crash
+          artifact-name: tiny-tracker-trap-crash-full
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+      - name: Trap backend-crash
+        if: always()
+        env:
+          TRAP: backend-crash
+          CLI_EXIT: ${{ steps.crash.outputs.cli-exit-code }}
+          EXIT_STATUS: ${{ steps.crash.outputs.exit-status }}
+          RESULTS: ${{ steps.crash.outputs.results-path }}
+        run: cat "$RUNNER_TEMP/crash.log"; dogfood/tiny-tracker/expect-trap.sh
+      # Trap 2: every resource's set-up fails.
+      - name: Start a fresh backend
+        if: always()
+        run: dogfood/tiny-tracker/backend.sh stop; dogfood/tiny-tracker/backend.sh start
+      - id: plan-setup
+        name: Plan (setup-fails)
+        uses: ./
+        with:
+          manifest: dogfood/tiny-tracker/writecheck-setup-fails.yaml
+          mode: plan
+          artifact-name: tiny-tracker-trap-setup-plan
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+      - name: Compare the plan hash with the accepted one
+        env:
+          SEEN: ${{ steps.plan-setup.outputs.plan-hash }}
+        run: dogfood/check-plan-hash.sh df91a667f2a42138 "$SEEN"
+      - id: setup
+        name: Full run, every set-up failing
+        continue-on-error: true
+        uses: ./
+        with:
+          manifest: dogfood/tiny-tracker/writecheck-setup-fails.yaml
+          mode: full
+          fail-on: none
+          confirm-target: tiny-tracker
+          plan-hash: ${{ env.ACCEPTED_PLAN_HASH }}
+          results-dir: mwsc-setup
+          artifact-name: tiny-tracker-trap-setup-full
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+      - name: Trap setup-fails
+        if: always()
+        env:
+          TRAP: setup-fails
+          CLI_EXIT: ${{ steps.setup.outputs.cli-exit-code }}
+          RESULTS: ${{ steps.setup.outputs.results-path }}
+        run: dogfood/tiny-tracker/expect-trap.sh
       - name: Stop the backend
         if: always()
         run: dogfood/tiny-tracker/backend.sh stop

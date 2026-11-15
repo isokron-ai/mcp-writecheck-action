@@ -1,5 +1,5 @@
 {
- "comment": "One tiny-tracker defect per cell (tiny-tracker b9265fe, CLI 0295ed6). expect: detected (a violated record of the requirement) or missed (a known miss of the CLI: an expected failure until the CLI detects it; then flip it). plan_hash: read and accepted per defect (only defects that change the catalog change the plan).",
+ "comment": "One tiny-tracker defect per cell (tiny-tracker b9265fe, CLI 0295ed6). expect: detected (a violated record of the requirement, or for a review-only clause a self-attested one answered no) or missed (a known miss of the CLI: an expected failure until the CLI detects it; then flip it). plan_hash: read and accepted per defect (only defects that change the catalog change the plan).",
  "cells": [
   { "defect": "update-adds-defaults", "requirement": "MWS-UPD-1", "plan_hash": "1cd00c43789a075f", "expect": "detected" },
   { "defect": "label-by-position", "requirement": "MWS-UPD-2", "plan_hash": "949094d393dbe2f3", "expect": "detected" },
