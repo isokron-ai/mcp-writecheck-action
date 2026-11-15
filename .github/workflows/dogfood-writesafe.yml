@@ -19,9 +19,6 @@ on:
   # while the CLI's repository is private this job needs MWS_CLI_TOKEN. When the CLI is on npm or its
   # repository is public, drop the secret and add back: schedule (cron '29 3 * * *'), and pull_request
   # and push to main on the paths of this workflow, with the same-repository `if:` on the jobs.
-  # TEMPORARY test of this commit; removed in the next commit.
-  push:
-    branches: ['dogfood/initial']
   workflow_dispatch:
     inputs:
       cli-ref:
