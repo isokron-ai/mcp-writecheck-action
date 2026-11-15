@@ -1,0 +1,202 @@
+# mcp-writecheck manifest for tiny-tracker, the MWS sample server.
+#
+# It covers every tool tiny-tracker offers: tickets (create, get, list, update, replace, delete,
+# delete by filter, bulk update), comments, labels (add, remove, replace) and projects (create,
+# list, delete). The tester starts the MCP server itself (`server`, below) and points it at a
+# loopback gate in front of the backend, so concurrency and failures can be forced.
+#
+# Before a run, start the backend and set two variables (the demo does all of this for you):
+#   export TRACKER_BACKEND_TOKEN=$(openssl rand -hex 16)
+#   node dist/src/cli.js backend --port 4100 &        # prints {"backend":"http://127.0.0.1:4100"}
+#   export TRACKER_BACKEND_URL=http://127.0.0.1:4100
+#   mcp-writecheck run -m writecheck.yaml
+# A broken build: export TRACKER_DEFECTS=all (or one defect name) before the run.
+
+mws: "0.9"
+
+server:
+  launch:
+    command: [node, dist/src/cli.js, server, --port, "0"]
+    url_from: mcp                      # the first stdout line is {"mcp": "http://127.0.0.1:…/mcp", …}
+  cwd: ../../tt/examples/tiny-tracker   # the checked-out tiny-tracker, relative to this file
+  env_passthrough: [TRACKER_BACKEND_TOKEN]
+  env_public: [TRACKER_BACKEND_URL, TRACKER_DEFECTS, TRACKER_VARIANTS, TRACKER_KEY_JOURNAL]
+  processes: separate
+  # MWS-RETRY-2 step (e): the tester stops its own server process (SIGTERM) and starts it again with the same command.
+  restart: { stop: graceful }
+
+target:
+  environment: test
+  confirm: tiny-tracker
+  # list_projects declares readOnlyHint: true; a server that annotates no tool adds read_only: true here instead.
+  guard: { tool: list_projects, args: {}, path: projects, pattern: "\"inbox\"" }
+
+backend:
+  gate: { rewrite_env: TRACKER_BACKEND_URL }
+
+limits: { write_budget: 20000, writes_per_second: 1000, pairs: 40, stale_reps: 3, gate_reps: 2, timeout_ms: 15000, max_fuzz_cases: 200 }
+
+settings:
+  # valid: whether each value the server accepts restricts or permits writes (spec Annex E, R7-6); restricting values are sent as probes.
+  read_only: { env: TRACKER_READ_ONLY, on: "true", valid: { "true": restrict, "1": restrict, "yes": restrict, "on": restrict, "false": permit, "0": permit, "no": permit, "off": permit } }
+  tool_filters:
+    - { env: TRACKER_TOOLS, kind: allow }
+    - { env: TRACKER_DENY_TOOLS, kind: deny }
+
+secrets:
+  token_params: [token, sig, signature, access_token]
+  issuing_tools: []                    # no tool exists to issue a credential (spec NF-16)
+
+canaries:
+  - { name: projects, tool: list_projects, args: {}, path: projects }
+
+# Review-only clauses, answered in advance as rules (each answer is recorded as self-attested).
+review:
+  by: the tiny-tracker maintainers (rules written before the run)
+  conflict_says_not_applied: "nothing was (written|deleted|changed)"
+  rejection_gives_reason: "must|expected|one of|at (most|least)|not allowed|unknown|required|does not match|invalid"
+  conflict_says_reread: "re-read|read it again"
+  stale_writes_disclosed: "not detected|best-effort"
+
+# Spec 7.3, rule 11: how tiny-tracker words what a result says. Where the declaration gives no pattern for a kind, a verdict
+# that turns on reading the text is not tested (the tester's built-in default never decides one on its own).
+patterns:
+  outcome_unknown: 'not known whether'
+  applied: '(?<!\bnot )(?<!\bnothing was )\b(updated|applied|written|created)\b'
+  not_used: '\bnot used\b|\bignored argument'
+  no_tools: '\bnames no tools\b|\bno tools? (is |are )?enabled\b'
+  unavailable: '\bcould not be reached\b|\btry again later\b|\brate limit|\btemporarily unavailable\b'
+
+# Arguments for the label tools, called on a scratch ticket for the annotation checks.
+calls:
+  add_label: { resource: ticket, args: { id: "{{id}}", name: added } }
+  remove_label: { resource: ticket, args: { id: "{{id}}", label_id: "{{object.labels[0].id}}" } }
+  set_labels: { resource: ticket, args: { id: "{{id}}", labels: [z], expected_version: "{{object.version}}" } }
+
+resources:
+  # Projects: the scopes tickets live in. The caller chooses the key (MWS-TGT-3).
+  - name: project
+    create: { tool: create_project, args: { key: "{{key}}", name: "{{marker}}" }, id: key, name_path: key }
+    read: { tool: list_projects, args: {}, items: projects, match: key }
+    key: { arg: key, vary: { arg: name, path: name } }
+    list: { tool: list_projects, args: {}, items: projects, id: key, name: name }
+    delete: { tool: delete_project, args: { key: "{{id}}" } }
+    no_version_check: [delete_project]   # projects carry no version the backend checks (MWS-CONC-5)
+    cleanup: delete
+    # MWS-RETRY-2: the key goes to the backend, which answers a repeat with the first result (backend_key). A new key for a
+    # project key that exists is refused by the duplicate check the backend makes whatever the key (own_checks: name).
+    # Step (c) changes the project key: under a fresh key the tool would create that project.
+    idempotency: { args: { key: "{{key}}", name: "{{marker}}" }, key: { arg: idempotency_key }, id: key, replay_marker: replayed, vary: key, own_checks: [name], backend_key: true }
+
+  # Tickets through update_ticket (a field patch). The version is optional in the schema; without it the tool
+  # needs force: true (an explicit override, default off), which the tester sends wherever it sends no version.
+  # (A tool whose declared update arguments themselves set an override declares update.override instead: MWS-CONC-1 is then not tested.)
+  # MWS-CONC-2's second run leaves out both and must be refused.
+  - name: ticket
+    scope:
+      resource: project
+      arg: project
+      default: inbox
+      list: { tool: list_tickets, args: { project: "{{scope}}" }, items: tickets, id: id, name: title }
+    # Every optional field set to a value that is not its default, so that a reset shows (MWS-UPD-1).
+    create: { tool: create_ticket, args: { project: "{{?scope}}", title: "{{marker}}", status: in_progress, priority: 2, description: seeded, details: { component: core, severity: high }, labels: [a, b, c] }, id: id, name_path: title }
+    read: { tool: get_ticket, args: { id: "{{id}}" }, ignore: [updated_at, created_at] }
+    update:
+      tool: update_ticket
+      mode: field_patch
+      args: { id: "{{id}}", "{{field}}": "{{value}}", expected_version: "{{?version}}" }
+      cases:
+        - { name: rename_and_unassign, args: { title: "{{prefix}}renamed", assignee: null }, expect: { title: "{{prefix}}renamed", assignee: null } }
+    fields:
+      - { path: assignee, values: [ann, bob], empty: null }
+      - { path: status, values: [in_progress, closed] }
+    version: { read: version, arg: expected_version, optional: true, override: force }
+    delete: { tool: delete_ticket, args: { id: "{{id}}", expected_version: "{{?version}}" } }
+    versioned:
+      - { tool: set_labels, args: { id: "{{id}}", labels: [x], expected_version: "{{version}}" } }
+    list: { tool: list_tickets, args: { title_prefix: "{{prefix}}" }, items: tickets, id: id, name: title }
+    missing_id: T-999999
+    cleanup: delete
+    # MWS-RETRY-2: the key goes to the backend, which keeps it (across a restart of the MCP server too) and answers a repeat with the first result.
+    idempotency: { args: { project: "{{?scope}}", title: "{{marker}}" }, key: { arg: idempotency_key }, replay_marker: replayed, backend_key: true }
+    # MWS-TGT-2: the selector forms are sent only after MWS-TGT-1 is held for delete_tickets itself (spec 7.3, rule 1);
+    # narrow limits that MWS-TGT-1 call to the objects named with the run's marker.
+    selector:
+      tool: delete_tickets
+      args: { project: "{{scope}}" }
+      narrow: { title_prefix: "{{marker}}" }
+      # Destructive by design: tiny-tracker's backend is disposable (the demo starts a fresh one), so the run opts in.
+      send_empty_forms: true
+      forms:
+        - { name: omitted, args: {} }
+    multi:
+      - tool: bulk_update_tickets
+        args: { project: "{{scope}}", ids: "{{ids}}", status: closed }
+        effect: { path: status, value: closed }
+        invalid_id: T-999999
+        report: { applied: applied, id: id }
+      - tool: delete_tickets
+        args: { project: "{{scope}}", title_prefix: "{{batch}}" }
+        effect: deleted
+    list_edit:
+      tool: remove_label
+      args: { id: "{{id}}" }
+      list: labels
+      element: { id: id, name: name }
+      address: { by_id: label_id, by_position: position }
+      insert: { tool: set_labels, args: { id: "{{id}}", labels: "{{names_inserted}}", force: true } }
+    # MWS-RETRY-3: close_ticket asks for a confirmation (input_required) before it writes.
+    input_required:
+      - { tool: close_ticket, args: { id: "{{id}}" }, answers: { confirm: { action: accept, content: { confirm: true } } }, effect: { path: status, value: closed } }
+    # MWS-IN-5: values valid by update_ticket's schema to try (a title of 150 characters; the schema allows 200).
+    try_values:
+      - { arg: title, length: 150 }
+    creates:
+      - name: comment
+        tool: add_comment
+        args: { id: "{{id}}", body: "{{marker}}" }
+        find: { tool: get_ticket, args: { id: "{{id}}" }, items: comments, id: id, match: body }
+        idempotency: { key: { arg: idempotency_key } }
+    failures:
+      - { name: comment_on_missing_ticket, tool: add_comment, args: { id: "{{missing_id}}", body: "{{prefix}}x" } }
+    jobs:
+      - name: triage
+        calls:
+          - { tool: get_ticket, args: { id: "{{id}}" } }
+          - { tool: update_ticket, args: { id: "{{id}}", status: closed, force: true } }
+          - { tool: add_comment, args: { id: "{{id}}", body: "{{prefix}}triaged" } }
+    control:
+      base_env: TRACKER_BACKEND_URL
+      auth: { bearer_env: TRACKER_BACKEND_TOKEN }
+      read: { http: [GET, "/tickets/{{id}}"], object: ticket }
+      patch: { http: [PATCH, "/tickets/{{id}}"], body: { "{{field}}": "{{value}}" } }
+      write: { http: [PUT, "/tickets/{{id}}"], body: { title: "{{object.title}}", status: "{{object.status}}", assignee: "{{object.assignee}}", priority: "{{object.priority}}" }, headers: { if-match: "{{version}}" } }
+      delete: { http: [DELETE, "/tickets/{{id}}"], headers: { if-match: "{{version}}" } }
+      create: { http: [POST, "/tickets"], body: { project: "{{scope}}", title: "{{marker}}", status: open, labels: [a, b, c] }, id: ticket.id }
+
+  # The same tickets through replace_ticket (a whole-object write that needs the version).
+  - name: ticket-replace
+    scope:
+      resource: project
+      arg: project
+      default: inbox
+      list: { tool: list_tickets, args: { project: "{{scope}}" }, items: tickets, id: id, name: title }
+    create: { tool: create_ticket, args: { project: "{{?scope}}", title: "{{marker}}", status: in_progress, priority: 2 }, id: id, name_path: title }
+    read: { tool: get_ticket, args: { id: "{{id}}" }, ignore: [updated_at, created_at] }
+    update:
+      tool: replace_ticket
+      mode: full_replace
+      args: { id: "{{id}}", expected_version: "{{version}}", title: "{{object.title}}", status: "{{object.status}}", assignee: "{{object.assignee}}", priority: "{{object.priority}}" }
+    fields:
+      - { path: assignee, values: [ann, bob], empty: null }
+      - { path: status, values: [in_progress, closed] }
+    version: { read: version, arg: expected_version }
+    delete: { tool: delete_ticket, args: { id: "{{id}}", force: true } }
+    list: { tool: list_tickets, args: { title_prefix: "{{prefix}}" }, items: tickets, id: id, name: title }
+    cleanup: delete
+    control:
+      base_env: TRACKER_BACKEND_URL
+      auth: { bearer_env: TRACKER_BACKEND_TOKEN }
+      read: { http: [GET, "/tickets/{{id}}"], object: ticket }
+      patch: { http: [PATCH, "/tickets/{{id}}"], body: { "{{field}}": "{{value}}" } }
+      write: { http: [PUT, "/tickets/{{id}}"], body: { title: "{{object.title}}", status: "{{object.status}}", assignee: "{{object.assignee}}", priority: "{{object.priority}}" }, headers: { if-match: "{{version}}" } }

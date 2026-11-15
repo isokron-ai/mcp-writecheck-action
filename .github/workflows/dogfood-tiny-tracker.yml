@@ -1,0 +1,160 @@
+# Dogfood: this action against tiny-tracker, the MWS sample server, every night and on demand.
+#
+#   clean    tiny-tracker as published (no defect switched on): plan, catalog, then a full run with
+#            fail-on: must. Expected green.
+#   defects  the same server with every teaching defect on (TRACKER_DEFECTS=all). The action must FAIL
+#            this job's run step; the job itself passes only when it does, with violated records.
+#
+# The plan hashes below were read and accepted by a person (the action's rule: never take a hash
+# from a plan job's output). When tiny-tracker, the manifest or the CLI pin changes, the full run is
+# refused with a hash mismatch: read the new plan in the plan step's summary and update the hash.
+#
+# Security: workflow_dispatch and schedule only (no pull_request, never pull_request_target), so a
+# fork never gets MWS_CLI_TOKEN. That secret is read-only on isokron-ai/mcp-write-safety and is used
+# for the CLI fetch and the tiny-tracker checkout. Third-party actions are pinned by full SHA.
+
+name: "dogfood: tiny-tracker"
+
+on:
+  # TEMPORARY, dropped before the PR: workflow_dispatch needs the file on main.
+  push:
+    branches: ['dogfood/**']
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dogfood-tiny-tracker-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # tiny-tracker examples/tiny-tracker-resync (PR #7 of isokron-ai/mcp-write-safety).
+  TT_REF: b9265fe3d768a40f316837cf31528e856ff809d8
+  # The same backend URL in every step, so that every step arrives at the same plan hash.
+  TRACKER_BACKEND_URL: http://127.0.0.1:4610
+
+jobs:
+  clean:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PLAN_HASH: 1cd00c43789a075f
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out tiny-tracker
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: isokron-ai/mcp-write-safety
+          ref: ${{ env.TT_REF }}
+          token: ${{ secrets.MWS_CLI_TOKEN }}
+          path: tt
+          sparse-checkout: examples/tiny-tracker
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Build tiny-tracker
+        working-directory: tt/examples/tiny-tracker
+        run: npm ci --ignore-scripts --no-audit --no-fund && npm run build
+      - name: Start the tiny-tracker backend
+        run: dogfood/tiny-tracker/backend.sh start
+      - id: plan
+        name: Plan
+        uses: ./
+        with:
+          manifest: dogfood/tiny-tracker/writecheck.yaml
+          mode: plan
+          artifact-name: tiny-tracker-clean-plan
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+      - name: Compare the plan hash with the accepted one
+        env:
+          SEEN: ${{ steps.plan.outputs.plan-hash }}
+        run: dogfood/check-plan-hash.sh "$PLAN_HASH" "$SEEN"
+      - name: Catalog
+        uses: ./
+        with:
+          manifest: dogfood/tiny-tracker/writecheck.yaml
+          mode: catalog
+          fail-on: must
+          artifact-name: tiny-tracker-clean-catalog
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+      - name: Full run
+        uses: ./
+        with:
+          manifest: dogfood/tiny-tracker/writecheck.yaml
+          mode: full
+          fail-on: must
+          confirm-target: tiny-tracker
+          plan-hash: ${{ env.PLAN_HASH }}
+          artifact-name: tiny-tracker-clean-full
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+      - name: Stop the backend
+        if: always()
+        run: dogfood/tiny-tracker/backend.sh stop
+
+  defects:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PLAN_HASH: d611779dfe2ef06a
+      TRACKER_DEFECTS: all
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out tiny-tracker
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: isokron-ai/mcp-write-safety
+          ref: ${{ env.TT_REF }}
+          token: ${{ secrets.MWS_CLI_TOKEN }}
+          path: tt
+          sparse-checkout: examples/tiny-tracker
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Build tiny-tracker
+        working-directory: tt/examples/tiny-tracker
+        run: npm ci --ignore-scripts --no-audit --no-fund && npm run build
+      - name: Start the tiny-tracker backend
+        run: dogfood/tiny-tracker/backend.sh start
+      - id: plan
+        name: Plan
+        uses: ./
+        with:
+          manifest: dogfood/tiny-tracker/writecheck.yaml
+          mode: plan
+          artifact-name: tiny-tracker-defects-plan
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+      - name: Compare the plan hash with the accepted one
+        env:
+          SEEN: ${{ steps.plan.outputs.plan-hash }}
+        run: dogfood/check-plan-hash.sh "$PLAN_HASH" "$SEEN"
+      - id: full
+        name: Full run (expected to fail)
+        continue-on-error: true
+        uses: ./
+        with:
+          manifest: dogfood/tiny-tracker/writecheck.yaml
+          mode: full
+          fail-on: must
+          confirm-target: tiny-tracker
+          plan-hash: ${{ env.PLAN_HASH }}
+          artifact-name: tiny-tracker-defects-full
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+      - name: The action must have failed the run on violated MUST records
+        env:
+          OUTCOME: ${{ steps.full.outcome }}
+          EXIT_STATUS: ${{ steps.full.outputs.exit-status }}
+          CLI_EXIT: ${{ steps.full.outputs.cli-exit-code }}
+          RESULTS: ${{ steps.full.outputs.results-path }}
+        run: dogfood/tiny-tracker/expect-defects.sh
+      - name: Stop the backend
+        if: always()
+        run: dogfood/tiny-tracker/backend.sh stop
