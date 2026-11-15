@@ -7,14 +7,18 @@
 #   plan  on: the plan and its hash (tools/list only; nothing is written).
 #   full  OFF until the owner decides (see the job's comment).
 #
-# Security: no pull_request_target. A pull request from a fork runs nothing here (the job's `if:`), so
-# a fork never gets MWS_CLI_TOKEN, the one secret (read-only on the CLI's repository, for the CLI fetch
-# only; the plugin repository is public). Every Strapi credential is generated in the job and masked.
+# Security: no pull_request_target; dispatch only (see `on:`). The one secret, MWS_CLI_TOKEN (read-only
+# on the CLI's repository), is used by one checkout step that runs before anything of Strapi is installed
+# or started; the action gets the built CLI through cli-path, never the token. Every Strapi credential is generated in the job and masked.
 # Third-party actions are pinned by full SHA. Strapi listens on 127.0.0.1 only.
 
 name: "dogfood: writesafe"
 
 on:
+  # Dispatch only, for now: the test app installs Strapi's whole npm tree (unlocked, fixed by date), and
+  # while the CLI's repository is private this job needs MWS_CLI_TOKEN. When the CLI is on npm or its
+  # repository is public, drop the secret and add back: schedule (cron '29 3 * * *'), and pull_request
+  # and push to main on the paths of this workflow, with the same-repository `if:` on the jobs.
   workflow_dispatch:
     inputs:
       cli-ref:
@@ -25,13 +29,6 @@ on:
         description: "Accepted plan hashes for that CLI, after reading the plans: space-separated job=hash pairs (jobs: plan, full)."
         required: false
         default: ''
-  schedule:
-    - cron: '29 3 * * *'
-  pull_request:
-    paths: ['dogfood/writesafe/**', 'dogfood/*.sh', '.github/workflows/dogfood-writesafe.yml', 'action.yml', 'contract.mjs', 'src/**']
-  push:
-    branches: [main]
-    paths: ['dogfood/writesafe/**', 'dogfood/*.sh', '.github/workflows/dogfood-writesafe.yml', 'action.yml', 'contract.mjs', 'src/**']
 
 permissions:
   contents: read
@@ -50,7 +47,6 @@ env:
 
 jobs:
   plan:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -59,6 +55,26 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      # The CLI first, before any third-party code runs in this job: the only step with the token.
+      - id: cliref
+        name: Choose the CLI commit
+        env:
+          INPUT_REF: ${{ inputs.cli-ref }}
+        run: dogfood/cli-ref.sh
+      - name: Check out mcp-writecheck
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: isokron-ai/mcp-write-safety
+          ref: ${{ steps.cliref.outputs.ref }}
+          token: ${{ secrets.MWS_CLI_TOKEN }}
+          path: mws-cli
+          sparse-checkout: packages/writecheck
+          persist-credentials: false
+      - name: Build mcp-writecheck
+        run: dogfood/build-cli.sh
       - name: Check out writesafe
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -66,9 +82,6 @@ jobs:
           ref: ${{ env.WS_REF }}
           path: ws
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 22
       - name: Build the test app
         run: dogfood/writesafe/strapi.sh prepare
       - name: Start Strapi and seed test data
@@ -79,9 +92,8 @@ jobs:
         with:
           manifest: dogfood/writesafe/writecheck.yaml
           mode: plan
-          cli-ref: ${{ inputs.cli-ref }}
           artifact-name: writesafe-plan
-          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+          cli-path: ${{ env.MWSC_CLI_PATH }}
       - name: Compare the plan hash with the accepted one
         env:
           SEEN: ${{ steps.plan.outputs.plan-hash }}
@@ -92,9 +104,9 @@ jobs:
 
   # OFF: waits for the owner. A full run on the plugin's public main would publish the results of the
   # plugin's own pre-release test cycle before the fixes for them are merged and synced. Switch it on
-  # (delete the `false &&`) once the owner says so; pin PLAN_HASH from the plan job first.
+  # (delete the `if: false`) once the owner says so; pin PLAN_HASH from the plan job first.
   full:
-    if: false && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    if: false
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -103,6 +115,26 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      # The CLI first, before any third-party code runs in this job: the only step with the token.
+      - id: cliref
+        name: Choose the CLI commit
+        env:
+          INPUT_REF: ${{ inputs.cli-ref }}
+        run: dogfood/cli-ref.sh
+      - name: Check out mcp-writecheck
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: isokron-ai/mcp-write-safety
+          ref: ${{ steps.cliref.outputs.ref }}
+          token: ${{ secrets.MWS_CLI_TOKEN }}
+          path: mws-cli
+          sparse-checkout: packages/writecheck
+          persist-credentials: false
+      - name: Build mcp-writecheck
+        run: dogfood/build-cli.sh
       - name: Check out writesafe
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -110,9 +142,6 @@ jobs:
           ref: ${{ env.WS_REF }}
           path: ws
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 22
       - name: Build the test app
         run: dogfood/writesafe/strapi.sh prepare
       - name: Start Strapi and seed test data
@@ -123,9 +152,8 @@ jobs:
         with:
           manifest: dogfood/writesafe/writecheck.yaml
           mode: plan
-          cli-ref: ${{ inputs.cli-ref }}
           artifact-name: writesafe-full-plan
-          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+          cli-path: ${{ env.MWSC_CLI_PATH }}
       - name: Compare the plan hash with the accepted one
         env:
           SEEN: ${{ steps.plan.outputs.plan-hash }}
@@ -136,9 +164,8 @@ jobs:
           manifest: dogfood/writesafe/writecheck.yaml
           mode: catalog
           fail-on: must
-          cli-ref: ${{ inputs.cli-ref }}
           artifact-name: writesafe-catalog
-          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+          cli-path: ${{ env.MWSC_CLI_PATH }}
       - name: Full run
         uses: ./
         with:
@@ -147,9 +174,8 @@ jobs:
           fail-on: must
           confirm-target: writesafe-dogfood-strapi-5.62.0
           plan-hash: ${{ env.ACCEPTED_PLAN_HASH }}
-          cli-ref: ${{ inputs.cli-ref }}
           artifact-name: writesafe-full
-          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+          cli-path: ${{ env.MWSC_CLI_PATH }}
       - name: Stop Strapi
         if: always()
         run: dogfood/writesafe/strapi.sh stop

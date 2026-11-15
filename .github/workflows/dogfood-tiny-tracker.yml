@@ -63,6 +63,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: The tiny-tracker ref is a full commit SHA
+        env:
+          NAME: tiny-tracker-ref
+          REF: ${{ env.TT_REF }}
+        run: dogfood/check-ref.sh
       - name: Check out tiny-tracker
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -128,6 +133,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: The tiny-tracker ref is a full commit SHA
+        env:
+          NAME: tiny-tracker-ref
+          REF: ${{ env.TT_REF }}
+        run: dogfood/check-ref.sh
       - name: Check out tiny-tracker
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
