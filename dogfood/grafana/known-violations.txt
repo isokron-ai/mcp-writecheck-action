@@ -6,16 +6,7 @@
 #
 # MWS-IN-4
 MWS-IN-4 dashboard:get_dashboard_by_uid schema-probes
-MWS-IN-4 dashboard:update_dashboard schema-probes
-MWS-IN-4 dashboard-full:update_dashboard schema-probes
 MWS-IN-4 dashboard-v2:get_dashboard_by_uid schema-probes
-MWS-IN-4 dashboard-v2:update_dashboard schema-probes
-MWS-IN-4 alert-rule:alerting_rules_read schema-probes
-MWS-IN-4 alert-rule:alerting_rules_write schema-probes
-MWS-IN-4 alert-rule-alt:alerting_rules_read schema-probes
-MWS-IN-4 alert-rule-alt:alerting_rules_write schema-probes
-MWS-IN-4 annotation:get_annotations schema-probes
-MWS-IN-4 annotation:update_annotation schema-probes
 # MWS-IN-3
 MWS-IN-3 alert-rule:alerting_rules_read schema-probes
 MWS-IN-3 alert-rule:alerting_rules_write schema-probes
