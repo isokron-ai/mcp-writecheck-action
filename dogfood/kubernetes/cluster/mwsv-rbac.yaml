@@ -1,0 +1,30 @@
+# The server identity may create a namespace and bind, inside it, exactly the three write ClusterRoles to itself
+# (mcp-writecheck creates its scopes through the server). It gets no other grant.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mwsv-kms-scope-admin
+rules:
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [get, list, create, patch, delete]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [rolebindings]
+    verbs: [get, list, create, patch, delete]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [clusterroles]
+    verbs: [bind]
+    resourceNames: [kms-probe-write, kms-probe-write-addons, kms-helm-releases]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mwsv-kms-scope-admin
+subjects:
+  - kind: ServiceAccount
+    name: kms
+    namespace: mcp-audit-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: mwsv-kms-scope-admin

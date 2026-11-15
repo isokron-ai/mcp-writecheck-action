@@ -1,0 +1,187 @@
+# Dogfood: this action against IsoKron's research build of the Grafana MCP server (the fork
+# isokron-ai/mcp-grafana, branch iso/write-path), every night and on demand.
+#
+#   research  the fork at a pinned commit, built with Go, against a disposable Grafana 13.3.0
+#             (docker, loopback only) started in the job: plan, catalog, then a full run. Snapshots
+#             of what the tester did not create are taken before and after, and must match. The
+#             violated MUST records must be the known ones (dogfood/grafana/known-violations.txt).
+#   vendor    the upstream build (image grafana/mcp-grafana:2.2.0). DISABLED: it needs the owner's
+#             go. Job logs and summaries of this repository are public, and not every upstream
+#             finding has been reported yet.
+#
+# The plan hash below was read and accepted by a person (the action's rule: never take a hash from
+# a plan job's output). When the fork commit, the manifest, Grafana or the CLI pin changes, the hash
+# check fails: read the new plan in the plan step's summary and update PLAN_HASH.
+#
+# Security: workflow_dispatch and schedule only (no pull_request, never pull_request_target), so a
+# fork of this repository never gets MWS_CLI_TOKEN, which is read-only and used only for the CLI
+# fetch. The Grafana admin password and the service-account token are made in the job and masked.
+# Third-party actions are pinned by full SHA.
+
+name: "dogfood: grafana"
+
+on:
+  # TEMPORARY, dropped before the PR: workflow_dispatch needs the file on main.
+  push:
+    branches: ['dogfood/grafana']
+  workflow_dispatch:
+  schedule:
+    - cron: '31 4 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dogfood-grafana-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # isokron-ai/mcp-grafana, branch iso/write-path.
+  FORK_REF: 527bc0fd8baea19a0097c2a369cb9a7417644480
+  GRAFANA_IMAGE: grafana/grafana:13.3.0@sha256:488984b716c0862639f91a698adbe2862677a5a07bad42da5f03f3030883b205
+  # The same URL in every step, so that every step arrives at the same plan hash.
+  GRAFANA_URL: http://127.0.0.1:4930
+
+jobs:
+  research:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PLAN_HASH: 2ca8ca22affa7da4
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out the research build
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: isokron-ai/mcp-grafana
+          ref: ${{ env.FORK_REF }}
+          path: srv-grafana
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: srv-grafana/go.mod
+          cache-dependency-path: srv-grafana/go.sum
+      - name: Build the research build
+        working-directory: srv-grafana
+        env:
+          CGO_ENABLED: '0'
+        run: go build -trimpath -o ../grafana-bin/mcp-grafana ./cmd/mcp-grafana
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Start Grafana
+        run: dogfood/grafana/grafana.sh start
+      - name: Fixtures and bystanders
+        run: dogfood/grafana/grafana.sh fixtures
+      - name: Snapshot before
+        run: dogfood/grafana/grafana.sh snap "$RUNNER_TEMP/snap-before.json"
+      - id: plan
+        name: Plan
+        uses: ./
+        with:
+          manifest: dogfood/grafana/writecheck.yaml
+          mode: plan
+          artifact-name: grafana-research-plan
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+      - name: Compare the plan hash with the accepted one
+        env:
+          SEEN: ${{ steps.plan.outputs.plan-hash }}
+        run: dogfood/check-plan-hash.sh "$PLAN_HASH" "$SEEN"
+      - name: Catalog
+        uses: ./
+        with:
+          manifest: dogfood/grafana/writecheck.yaml
+          mode: catalog
+          fail-on: must
+          artifact-name: grafana-research-catalog
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+      # fail-on: none, because the research build gives violated MUST records that are known and
+      # recorded (dogfood/grafana/known-violations.txt); the next step fails the job on any other.
+      # The action still fails this step on its own safety rules: a lost bystander, setup not
+      # released, an unfinished clean-up, or a run that did not complete.
+      - id: full
+        name: Full run
+        uses: ./
+        with:
+          manifest: dogfood/grafana/writecheck.yaml
+          mode: full
+          fail-on: none
+          confirm-target: mwsv-grafana-13
+          plan-hash: ${{ env.PLAN_HASH }}
+          artifact-name: grafana-research-full
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+      - name: Violated MUST records against the known ones
+        if: always() && steps.full.outputs.results-path != ''
+        env:
+          RESULTS: ${{ steps.full.outputs.results-path }}
+        run: node dogfood/grafana/expect-violations.mjs dogfood/grafana/known-violations.txt "$RESULTS"
+      - name: Snapshot after, and compare
+        if: always() && steps.plan.outcome == 'success'
+        run: |
+          dogfood/grafana/grafana.sh snap "$RUNNER_TEMP/snap-after.json"
+          dogfood/grafana/compare-snaps.py "$RUNNER_TEMP/snap-before.json" "$RUNNER_TEMP/snap-after.json"
+      - name: Stop Grafana
+        if: always()
+        run: dogfood/grafana/grafana.sh stop
+
+  vendor:
+    # DISABLED: needs the owner's go. Logs and job summaries here are public, and some upstream
+    # findings are not reported yet. To enable: remove this `if`, run once, read the plan in the
+    # plan step's summary, and pin its hash in PLAN_HASH.
+    if: false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PLAN_HASH: '0000000000000000'
+      VENDOR_IMAGE: grafana/mcp-grafana:2.2.0@sha256:697336440e34878f8e0b26a69675db8d7e97b4d0daec25ec5441c85ac6c60e81
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Take the upstream binary from its image
+        run: |
+          mkdir -p grafana-bin
+          docker create --name dogfood-grafana-vendor "$VENDOR_IMAGE" > /dev/null
+          docker cp dogfood-grafana-vendor:/app/mcp-grafana grafana-bin/mcp-grafana-vendor
+          docker rm dogfood-grafana-vendor > /dev/null
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Start Grafana
+        run: dogfood/grafana/grafana.sh start
+      - name: Fixtures and bystanders
+        run: dogfood/grafana/grafana.sh fixtures
+      - name: Snapshot before
+        run: dogfood/grafana/grafana.sh snap "$RUNNER_TEMP/snap-before.json"
+      - id: plan
+        name: Plan
+        uses: ./
+        with:
+          manifest: dogfood/grafana/writecheck-vendor.yaml
+          mode: plan
+          artifact-name: grafana-vendor-plan
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+      - name: Compare the plan hash with the accepted one
+        env:
+          SEEN: ${{ steps.plan.outputs.plan-hash }}
+        run: dogfood/check-plan-hash.sh "$PLAN_HASH" "$SEEN"
+      - name: Full run
+        uses: ./
+        with:
+          manifest: dogfood/grafana/writecheck-vendor.yaml
+          mode: full
+          fail-on: must
+          confirm-target: mwsv-grafana-13
+          plan-hash: ${{ env.PLAN_HASH }}
+          artifact-name: grafana-vendor-full
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+      - name: Snapshot after, and compare
+        if: always() && steps.plan.outcome == 'success'
+        run: |
+          dogfood/grafana/grafana.sh snap "$RUNNER_TEMP/snap-after.json"
+          dogfood/grafana/compare-snaps.py "$RUNNER_TEMP/snap-before.json" "$RUNNER_TEMP/snap-after.json"
+      - name: Stop Grafana
+        if: always()
+        run: dogfood/grafana/grafana.sh stop

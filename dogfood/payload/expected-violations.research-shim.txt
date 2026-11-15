@@ -1,0 +1,40 @@
+# Violated records the research build v2.1 is known to give with writecheck.research-shim.yaml.
+# A record not in this list fails the job (new); a listed record that no longer appears fails it too
+# (it flipped: remove the line). Format: <requirement> <level> <resource>:<tool>
+
+# Server: the find tools (and an update that names a valid field beside a misspelled one) still
+# drop unknown arguments; the research fix refuses only an update made of misspelled arguments.
+MWS-IN-2 MUST task:findTasks
+MWS-IN-2 MUST task:updateTasks
+MWS-IN-2 MUST listing:findListings
+MWS-IN-2 MUST listing:updateListings
+MWS-IN-2 MUST listing-market:findListings
+MWS-IN-2 MUST listing-market:updateListings
+MWS-IN-2 MUST post:findPosts
+MWS-IN-2 MUST post:updatePosts
+MWS-IN-2 MUST post-items:findPosts
+MWS-IN-7 SHOULD task:findTasks
+MWS-IN-7 SHOULD task:updateTasks
+MWS-IN-7 SHOULD listing:findListings
+MWS-IN-7 SHOULD listing:updateListings
+MWS-IN-7 SHOULD listing-market:findListings
+MWS-IN-7 SHOULD listing-market:updateListings
+MWS-IN-7 SHOULD post:findPosts
+MWS-IN-7 SHOULD post:updatePosts
+MWS-IN-7 SHOULD post-items:findPosts
+MWS-IN-7 SHOULD post-items:updatePosts
+
+# Server, a regression of the research build: updatePosts declares idempotentHint: true, but an
+# array sent without row ids gets new row ids on every call.
+MWS-ANN-3 MUST post-items:updatePosts
+
+# Server, by design: the research bulk update is best-effort (nothing is rolled back).
+MWS-ATOM-2 SHOULD task:updateTasks
+
+# Tool (mcp-writecheck): the MWS-UPD-1 nested_subfield probe reads the object-typed `data`
+# argument as a document field. A false violated record.
+MWS-UPD-1 MUST listing:updateListings
+
+# Server, by design: createTasks takes no idempotency key, and Payload offers none (the shim's
+# list reads make this record possible).
+MWS-RETRY-1 SHOULD task:createTasks

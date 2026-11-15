@@ -1,0 +1,112 @@
+# mcp-writecheck manifest for sea-lite (isokron-ai/sea-lite), a fenced work queue MCP server.
+#
+# The tester starts sea-lite over stdio (serve.sh) from the checked-out repository (../../srv),
+# with its store in a data dir made for this job only (SEA_LITE_DATA_DIR, set by the workflow
+# under the runner's temp folder). Every ticket in that store is disposable: the store is
+# created empty at the start of the job and thrown away with the runner (cleanup: ephemeral).
+# Before the run, dogfood/sea-lite/seed.sh creates the guard ticket and two bystander tickets.
+#
+# What this manifest can and cannot reach:
+# - sea_create, sea_get and sea_list are declared as the ticket resource, with sea_create's
+#   idempotency key (MWS-RETRY-1, RETRY-2).
+# - Every ticket write after the create (sea_update, sea_transition, sea_link, sea_finish,
+#   sea_release, sea_refresh) is fenced by a claim token that only a claim's answer carries
+#   (sea_get never returns it). A manifest has no way to carry a value from one call's answer into
+#   another call's arguments, so those tools have no update block here. They appear only as calls
+#   the server must refuse (a token that does not fence the ticket), under `failures`.
+# - sea-lite has no read-only mode and no tool allow-list or deny-list setting, so no `settings`.
+
+mws: "0.9"
+prefix: mwsdf
+
+server:
+  # serve.sh refuses to start without SEA_LITE_DATA_DIR, then runs `sea-lite serve` from ../../srv.
+  stdio: [bash, serve.sh]
+  cwd: .
+  env_public: [SEA_LITE_DATA_DIR]
+  # Several server processes may share one store (SQLite with BEGIN IMMEDIATE); the second
+  # connection of a concurrency test is a second process.
+  processes: separate
+  # MWS-RETRY-2 step (e): the key record is an event in the store's hash chain, written in the
+  # same transaction as the ticket.
+  restart: { stop: graceful }
+  protocol: auto
+
+target:
+  environment: test
+  confirm: sea-lite-dogfood
+  # sea_list declares readOnlyHint: true. The guard ticket is created by seed.sh before the run.
+  guard: { tool: sea_list, args: { query: dogfoodguard, include_terminal: true }, path: "tickets[0].title", pattern: "^dogfoodguard$" }
+
+limits: { write_budget: 4000, writes_per_second: 100, pairs: 40, stale_reps: 3, timeout_ms: 20000, max_fuzz_cases: 200 }
+
+secrets:
+  token_params: [token, claim_token, sig, signature, access_token]
+  # Claim tokens are issued by these tools: a fence capability is what they exist to return (NF-16).
+  issuing_tools: [sea_claim, sea_next, sea_create]
+
+canaries:
+  - { name: bystander_tickets, tool: sea_list, args: { query: dogfoodby, include_terminal: true }, path: tickets, ignore: [updated_at] }
+
+review:
+  by: the sea-lite maintainers (rules written before the run, from sea-lite's documented error texts)
+  conflict_says_not_applied: "nothing was written|no change"
+  rejection_gives_reason: "must|expected|required|one of|at (most|least)|not allowed|unknown|invalid|does not|not found|too (long|short|many)"
+  conflict_says_reread: "re-read|read (it )?again|sea_get|current"
+  stale_writes_disclosed: "not detected|best-effort"
+
+patterns:
+  not_applied: '\bnothing was written\b'
+  repeat_refused: '\breused with a different request\b'
+
+# Tools the annotation checks call on a scratch ticket. sea_claim is left out here: the CLI at the
+# pinned commit reads a claim placed on an unclaimed ticket (claim: null -> an object) as data
+# removed or replaced, a false MWS-ANN-2 violation. It runs in writecheck-claim.yaml, in the
+# workflow's cli-known-bugs job, until the CLI is fixed; then move it back here.
+calls:
+  sea_scope_check: { resource: ticket, args: { paths: ["{{prefix}}/scope-check"] } }
+  sea_history: { resource: ticket, args: { ticket_id: "{{id}}", limit: 20 } }
+
+resources:
+  - name: ticket
+    create:
+      tool: sea_create
+      # Every optional field set to a value that is not its default.
+      args: { title: "{{marker}}", body: seeded body, kind: chore, priority: high, tags: [dogfood, seeded] }
+      id: ticket.id
+      name_path: ticket.title
+    read:
+      tool: sea_get
+      args: { id: "{{id}}" }
+      object: ticket
+      ignore: [updated_at, last_seq]
+    list:
+      tool: sea_list
+      args: { include_terminal: true, limit: 200 }
+      items: tickets
+      id: id
+      name: title
+      ignore: [updated_at]
+      next: { path: next_cursor, arg: cursor }
+    missing_id: 00000000-0000-4000-8000-000000000000
+    cleanup: ephemeral
+    # MWS-RETRY-2: the key is the tool argument idempotency_key. A repeat with the same key and
+    # request answers with the first result and `replayed: true`; the same key with another title is
+    # refused ("reused with a different request; nothing was written"). Step (c) changes the title.
+    idempotency:
+      args: { title: "{{marker}}" }
+      key: { arg: idempotency_key }
+      id: ticket.id
+      replay_marker: replayed
+      vary: title
+      key_record_survives: { graceful: true, kill: true }
+    # MWS-RES-2: writes the server must refuse: a token that does not fence the ticket. With no
+    # update block there is no object under test, and the CLI at the pinned commit then sends these
+    # with {{id}} as null and records them `not tested`; they become real checks when it creates a
+    # scratch object for them.
+    failures:
+      - { name: update_with_foreign_token, tool: sea_update, args: { ticket_id: "{{id}}", claim_token: "{{prefix}}notatoken", title: "{{prefix}}x" } }
+      - { name: transition_with_foreign_token, tool: sea_transition, args: { ticket_id: "{{id}}", claim_token: "{{prefix}}notatoken", to: dropped, confirm: true } }
+      - { name: finish_with_foreign_token, tool: sea_finish, args: { ticket_id: "{{id}}", claim_token: "{{prefix}}notatoken", outcome: abandoned, note: "{{prefix}}x" } }
+      - { name: link_with_foreign_token, tool: sea_link, args: { action: add, from_id: "{{id}}", to_id: "{{id}}", link_type: relates_to, claim_token: "{{prefix}}notatoken" } }
+      - { name: claim_missing_ticket, tool: sea_claim, args: { ticket_ids: ["{{missing_id}}"] } }

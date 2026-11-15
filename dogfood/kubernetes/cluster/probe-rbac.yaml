@@ -1,0 +1,23 @@
+# kms-probe-write-nosvcdelete: the rules of kms-probe-write (the experiment's harness/cluster/server-rbac.yaml) except
+# that Services can be created, read and patched but NOT deleted. Bound only in mwsv-nosvcdel (up.sh), so pods_delete
+# runs there with an identity that may delete the Pod but not its Service (the manifest's declared failure).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kms-probe-write-nosvcdelete
+rules:
+  - apiGroups: [""]
+    resources: [configmaps, pods, persistentvolumeclaims, serviceaccounts]
+    verbs: [get, list, watch, create, update, patch, delete, deletecollection]
+  - apiGroups: [""]
+    resources: [services]
+    verbs: [get, list, watch, create, update, patch]
+  - apiGroups: [""]
+    resources: [pods/exec, pods/log]
+    verbs: [get, create]
+  - apiGroups: [apps]
+    resources: [deployments, deployments/scale, replicasets, replicasets/scale, statefulsets, statefulsets/scale]
+    verbs: [get, list, watch, create, update, patch, delete, deletecollection]
+  - apiGroups: [batch]
+    resources: [jobs, cronjobs]
+    verbs: [get, list, watch, create, update, patch, delete, deletecollection]

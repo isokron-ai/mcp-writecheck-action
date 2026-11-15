@@ -1,0 +1,6 @@
+apiVersion: v2
+name: mwsv-cm
+description: Dogfood chart. One ConfigMap named after the release; no image, nothing to wait for.
+type: application
+version: 0.1.0
+appVersion: "0"

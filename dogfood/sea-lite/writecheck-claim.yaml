@@ -1,0 +1,51 @@
+# mcp-writecheck manifest for sea-lite, cut down to one check: MWS-ANN-2 and ANN-5 for sea_claim,
+# called on a scratch ticket. It exists for the workflow's cli-known-bugs job: the CLI at the pinned
+# commit reads the claim the call places on an unclaimed ticket (claim: null -> an object) as data
+# removed or replaced, and reports sea_claim `violated`. The job passes while that false result is
+# the only violation, and fails once it is gone, so that the fix is noticed and sea_claim moves back
+# into writecheck.yaml. Same server, store and guard as writecheck.yaml.
+
+mws: "0.9"
+prefix: mwsdf
+
+server:
+  stdio: [bash, serve.sh]
+  cwd: .
+  env_public: [SEA_LITE_DATA_DIR]
+  protocol: auto
+
+target:
+  environment: test
+  confirm: sea-lite-dogfood
+  guard: { tool: sea_list, args: { query: dogfoodguard, include_terminal: true }, path: "tickets[0].title", pattern: "^dogfoodguard$" }
+
+limits: { write_budget: 200, writes_per_second: 100, timeout_ms: 20000 }
+
+secrets:
+  issuing_tools: [sea_claim, sea_next, sea_create]
+
+calls:
+  sea_claim: { resource: ticket, args: { ticket_ids: ["{{id}}"], lease_seconds: 60 } }
+
+resources:
+  - name: ticket
+    create:
+      tool: sea_create
+      args: { title: "{{marker}}", body: seeded body, kind: chore, priority: high, tags: [dogfood, seeded] }
+      id: ticket.id
+      name_path: ticket.title
+    read:
+      tool: sea_get
+      args: { id: "{{id}}" }
+      object: ticket
+      ignore: [updated_at, last_seq]
+    list:
+      tool: sea_list
+      args: { include_terminal: true, limit: 200 }
+      items: tickets
+      id: id
+      name: title
+      ignore: [updated_at]
+      next: { path: next_cursor, arg: cursor }
+    missing_id: 00000000-0000-4000-8000-000000000000
+    cleanup: ephemeral

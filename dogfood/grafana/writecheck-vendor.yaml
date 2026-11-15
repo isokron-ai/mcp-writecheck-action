@@ -1,0 +1,307 @@
+# mcp-writecheck manifest for the upstream (vendor) build of the Grafana MCP server, v2.2.0
+# (image grafana/mcp-grafana:2.2.0). The job that uses it is DISABLED until the owner decides
+# otherwise. The declaration is the research build's with the server binary changed, against a
+# disposable Grafana 13.3.0 that the job
+# starts. Used by .github/workflows/dogfood-grafana.yml. Nothing here names a real system.
+#
+# The job builds the server into grafana-bin/ at the workspace root, starts Grafana on
+# 127.0.0.1:4930 with an admin password made for the job, creates an Editor service account and
+# its token (GRAFANA_SERVICE_ACCOUNT_TOKEN, masked), and runs dogfood/grafana/grafana.sh fixtures:
+# the folder mwsv-fixture, the dashboards mwsv-canary and mwsv-annhost, and the objects the tester
+# does not create (folder mwsv-bystander, dashboard mwsv-bystander-dash, two annotations).
+#
+# Declaration notes (the facts a reader needs to judge the rows):
+#  - update_dashboard has two modes in one tool. Patch mode (uid + operations) reads and writes inside
+#    one call and takes no version: resource `dashboard`, mode field_patch. Full-JSON mode replaces the
+#    whole dashboard: resources `dashboard-full` (classic v1) and `dashboard-v2` (v2 schema).
+#  - On Grafana 13.3.0 get_dashboard_by_uid returns the k8s spec, which carries no version. The
+#    version a caller can send back is only in the legacy API answer, which the catalog offers through
+#    grafana_api_request. `dashboard-full` therefore reads through grafana_api_request, so that the
+#    body it sends back carries dashboard.version, and leaves `overwrite` at its default (off).
+#  - A v2 dashboard that exists can only be replaced with overwrite=true (the tool refuses otherwise).
+#    `dashboard-v2` therefore sends overwrite=true, declared as update.override (MWS NF-7). The
+#    research build's optional expectedVersion argument is not sent: get_dashboard_by_uid gives no
+#    version to send.
+#  - The control arm of `dashboard-v2` is the legacy save API (POST /api/dashboards/db with the version
+#    read first), not the k8s PUT the tool itself sends: this manifest format cannot carry
+#    metadata.resourceVersion from a control read into a control write when the compared object is the
+#    spec.
+#  - alerting_rules_write lists the rule's fields as separate arguments and lets the caller omit
+#    labels, annotations, is_paused and others: field_patch by MWS section 4. The platform's
+#    provisioning API has only a whole-rule PUT, so there is no control arm for it.
+#  - The second writer in every control arm is a JSON merge patch to the dashboard.grafana.app k8s API.
+
+mws: "0.9"
+
+server:
+  stdio: [./grafana-bin/mcp-grafana-vendor]   # taken by the job from the pinned upstream image
+  cwd: ../..                           # the workspace root, relative to this file
+  env_passthrough: [GRAFANA_SERVICE_ACCOUNT_TOKEN]
+  env_public: [GRAFANA_URL]
+  env: { GRAFANA_USAGE_STATS: disabled, DO_NOT_TRACK: "1" }
+  processes: separate
+
+target:
+  environment: test
+  confirm: mwsv-grafana-13
+  guard: { tool: get_dashboard_by_uid, args: { uid: mwsv-canary }, path: dashboard.title, pattern: "^mwsv canary \\(never written by the run\\)$" }
+
+backend:
+  gate: { rewrite_env: GRAFANA_URL }
+
+limits: { write_budget: 6000, writes_per_second: 20, pairs: 30, stale_reps: 3, gate_reps: 2, timeout_ms: 30000, max_fuzz_cases: 200 }
+
+canaries:
+  - { name: canary-dashboard, tool: get_dashboard_by_uid, args: { uid: mwsv-canary }, path: dashboard }
+
+review:
+  by: IsoKron (rules written before the run)
+  conflict_says_not_applied: "not (saved|applied|changed|written)|nothing was (saved|written|changed)|no changes? (were|was) (made|saved|applied)"
+  rejection_gives_reason: "must|expected|one of|at (most|least)|not allowed|unknown|unexpected|required|does not match|invalid|cannot|missing"
+  conflict_says_reread: "read (it )?again|re-?read|fetch the (latest|current)|latest version"
+
+resources:
+  # A folder: the caller may choose the uid (MWS-TGT-3). No update or delete tool exists for folders.
+  - name: folder
+    create: { tool: create_folder, args: { uid: "{{key}}", title: "{{marker}}" }, id: uid, name_path: title }
+    read: { tool: grafana_api_request, args: { endpoint: "/api/folders/{{id}}" }, object: data, ignore: [updated, version, created] }
+    key: { arg: uid, vary: { arg: title, path: title } }
+    cleanup: control_delete
+    control:
+      base_env: GRAFANA_URL
+      auth: { bearer_env: GRAFANA_SERVICE_ACCOUNT_TOKEN }
+      read: { http: [GET, "/api/folders/{{id}}"] }
+      delete: { http: [DELETE, "/api/folders/{{id}}"] }
+
+  # A classic dashboard edited through update_dashboard's patch mode.
+  - name: dashboard
+    vars: { folder: mwsv-fixture }
+    create:
+      tool: update_dashboard
+      args:
+        folderUid: "{{folder}}"
+        dashboard:
+          title: "{{marker}}"
+          description: "mwsv alpha"
+          timezone: utc
+          tags: [mwsv, one]
+          panels:
+            - { id: 1, type: text, title: P1, gridPos: { x: 0, y: 0, w: 8, h: 4 } }
+            - { id: 2, type: text, title: P2, gridPos: { x: 8, y: 0, w: 8, h: 4 } }
+            - { id: 3, type: text, title: P3, gridPos: { x: 16, y: 0, w: 8, h: 4 } }
+      id: uid
+      name_path: title
+    read: { tool: get_dashboard_by_uid, args: { uid: "{{id}}" }, object: dashboard, ignore: [id] }
+    update:
+      tool: update_dashboard
+      mode: field_patch
+      args: { uid: "{{id}}", operations: [ { op: replace, path: "$.{{field}}", value: "{{value}}" } ] }
+    fields:
+      # `value` is declared with every JSON type, so no value is of the wrong type for it.
+      - { path: description, values: ["mwsv alpha", "mwsv beta"], skip: [invalid] }
+      - { path: timezone, values: [utc, browser], skip: [invalid] }
+    version: { read: version }
+    missing_id: mwsv-missing-uid
+    failures:
+      - { name: patch_missing_dashboard, tool: update_dashboard, args: { uid: "{{missing_id}}", operations: [ { op: replace, path: "$.title", value: "{{prefix}}x" } ] } }
+    cleanup: control_delete
+    control:
+      base_env: GRAFANA_URL
+      auth: { bearer_env: GRAFANA_SERVICE_ACCOUNT_TOKEN }
+      read: { http: [GET, "/api/dashboards/uid/{{id}}"], object: dashboard }
+      patch: { http: [PATCH, "/apis/dashboard.grafana.app/v1beta1/namespaces/default/dashboards/{{id}}"], body: { spec: { "{{field}}": "{{value}}" } }, headers: { content-type: application/merge-patch+json } }
+      write: { http: [POST, "/api/dashboards/db"], body: { dashboard: "{{object}}", folderUid: "{{folder}}", overwrite: false } }
+      delete: { http: [DELETE, "/api/dashboards/uid/{{id}}"] }
+
+  # The same kind of dashboard written back whole (full-JSON mode), with the version the caller read.
+  - name: dashboard-full
+    vars: { folder: mwsv-fixture }
+    create:
+      tool: update_dashboard
+      args:
+        folderUid: "{{folder}}"
+        dashboard:
+          title: "{{marker}}"
+          description: "mwsv alpha"
+          timezone: utc
+          tags: [mwsv, one]
+          panels:
+            - { id: 1, type: text, title: P1, gridPos: { x: 0, y: 0, w: 8, h: 4 } }
+      id: uid
+      name_path: title
+    read: { tool: grafana_api_request, args: { endpoint: "/api/dashboards/uid/{{id}}" }, object: data.dashboard, ignore: [id] }
+    update:
+      tool: update_dashboard
+      mode: full_replace
+      args: { dashboard: "{{object}}", folderUid: "{{folder}}" }
+    fields:
+      - { path: description, values: ["mwsv alpha", "mwsv beta"] }
+      - { path: timezone, values: [utc, browser] }
+    version: { read: version }
+    cleanup: control_delete
+    control:
+      base_env: GRAFANA_URL
+      auth: { bearer_env: GRAFANA_SERVICE_ACCOUNT_TOKEN }
+      read: { http: [GET, "/api/dashboards/uid/{{id}}"], object: dashboard }
+      patch: { http: [PATCH, "/apis/dashboard.grafana.app/v1beta1/namespaces/default/dashboards/{{id}}"], body: { spec: { "{{field}}": "{{value}}" } }, headers: { content-type: application/merge-patch+json } }
+      write: { http: [POST, "/api/dashboards/db"], body: { dashboard: "{{object}}", folderUid: "{{folder}}", overwrite: false } }
+      delete: { http: [DELETE, "/api/dashboards/uid/{{id}}"] }
+
+  # A v2 dashboard written back whole. overwrite=true is the only way the tool replaces one.
+  - name: dashboard-v2
+    vars: { folder: mwsv-fixture }
+    create:
+      tool: update_dashboard
+      args:
+        uid: "{{key}}"
+        folderUid: "{{folder}}"
+        dashboard:
+          title: "{{marker}}"
+          description: "mwsv alpha"
+          tags: [mwsv-one]
+          timeSettings: { from: now-6h, to: now }
+          variables: []
+          elements:
+            p1: { kind: Panel, spec: { id: 1, title: Up, vizConfig: { kind: VizConfig, group: text, spec: {} }, data: { kind: QueryGroup, spec: { queries: [] } } } }
+          layout:
+            kind: GridLayout
+            spec: { items: [ { kind: GridLayoutItem, spec: { x: 0, y: 0, width: 24, height: 8, element: { kind: ElementReference, name: p1 } } } ] }
+      id: uid
+      name_path: title
+    read: { tool: get_dashboard_by_uid, args: { uid: "{{id}}" }, object: dashboard }
+    update:
+      tool: update_dashboard
+      mode: full_replace
+      args: { uid: "{{id}}", dashboard: "{{object}}", folderUid: "{{folder}}", overwrite: true }
+      # overwrite is an explicit override the declared call sets (MWS NF-7).
+      override: overwrite
+    fields:
+      - { path: description, values: ["mwsv alpha", "mwsv beta"] }
+      - { path: tags, values: [[mwsv-one], [mwsv-two]] }
+    version: { read: version }
+    cleanup: control_delete
+    control:
+      base_env: GRAFANA_URL
+      auth: { bearer_env: GRAFANA_SERVICE_ACCOUNT_TOKEN }
+      read: { http: [GET, "/api/dashboards/uid/{{id}}"], object: dashboard }
+      patch: { http: [PATCH, "/apis/dashboard.grafana.app/v2/namespaces/default/dashboards/{{id}}"], body: { spec: { "{{field}}": "{{value}}" } }, headers: { content-type: application/merge-patch+json } }
+      write: { http: [POST, "/api/dashboards/db"], body: { dashboard: "{{object}}", folderUid: "{{folder}}", overwrite: false } }
+      delete: { http: [DELETE, "/api/dashboards/uid/{{id}}"] }
+
+  # A Grafana-managed alert rule.
+  - name: alert-rule
+    vars: { folder: mwsv-fixture }
+    create:
+      tool: alerting_rules_write
+      args:
+        operation: create
+        title: "{{marker}}"
+        folder_uid: "{{folder}}"
+        rule_group: mwsv-group
+        condition: A
+        data: [ { refId: A, datasourceUid: __expr__, relativeTimeRange: { from: 0, to: 0 }, model: { type: math, expression: "1 == 1", refId: A } } ]
+        no_data_state: OK
+        exec_err_state: OK
+        for: 5m
+        org_id: 1
+        labels: { team: alpha }
+        annotations: { summary: first }
+        is_paused: true
+        keep_firing_for: 10m
+      id: uid
+      name_path: title
+    # title is ignored because every update must send it (it is a required argument) and this
+    # manifest format cannot repeat the created title in a field_patch update.
+    read: { tool: alerting_rules_read, args: { operation: get, rule_uid: "{{id}}" }, ignore: [state, health, last_evaluation, title, last_error] }
+    update:
+      tool: alerting_rules_write
+      mode: field_patch
+      args:
+        operation: update
+        rule_uid: "{{id}}"
+        title: "{{prefix}}rule {{id}}"
+        folder_uid: "{{folder}}"
+        rule_group: mwsv-group
+        condition: A
+        data: [ { refId: A, datasourceUid: __expr__, relativeTimeRange: { from: 0, to: 0 }, model: { type: math, expression: "1 == 1", refId: A } } ]
+        no_data_state: OK
+        exec_err_state: OK
+        for: 5m
+        org_id: 1
+        "{{field}}": "{{value}}"
+    fields:
+      - { path: labels, values: [{ team: alpha }, { team: beta }] }
+      - { path: annotations, values: [{ summary: first }, { summary: second }] }
+    delete: { tool: alerting_rules_write, args: { operation: delete, rule_uid: "{{id}}" } }
+    cleanup: delete
+    missing_id: mwsv-missing-rule
+
+  # The same tool with is_paused as the second field, its first value the default (false), so that
+  # two updates one after the other can reach the baseline even where an update resets omitted fields.
+  - name: alert-rule-alt
+    vars: { folder: mwsv-fixture }
+    create:
+      tool: alerting_rules_write
+      args:
+        operation: create
+        title: "{{marker}}"
+        folder_uid: "{{folder}}"
+        rule_group: mwsv-group-alt
+        condition: A
+        data: [ { refId: A, datasourceUid: __expr__, relativeTimeRange: { from: 0, to: 0 }, model: { type: math, expression: "1 == 1", refId: A } } ]
+        no_data_state: OK
+        exec_err_state: OK
+        for: 5m
+        org_id: 1
+        labels: { team: alpha }
+        annotations: { summary: first }
+        is_paused: false
+        keep_firing_for: 10m
+      id: uid
+      name_path: title
+    read: { tool: alerting_rules_read, args: { operation: get, rule_uid: "{{id}}" }, ignore: [state, health, last_evaluation, title, last_error] }
+    update:
+      tool: alerting_rules_write
+      mode: field_patch
+      args:
+        operation: update
+        rule_uid: "{{id}}"
+        title: "{{prefix}}rule {{id}}"
+        folder_uid: "{{folder}}"
+        rule_group: mwsv-group-alt
+        condition: A
+        data: [ { refId: A, datasourceUid: __expr__, relativeTimeRange: { from: 0, to: 0 }, model: { type: math, expression: "1 == 1", refId: A } } ]
+        no_data_state: OK
+        exec_err_state: OK
+        for: 5m
+        org_id: 1
+        "{{field}}": "{{value}}"
+    fields:
+      - { path: labels, values: [{ team: alpha }, { team: beta }] }
+      - { path: is_paused, values: [false, true] }
+    delete: { tool: alerting_rules_write, args: { operation: delete, rule_uid: "{{id}}" } }
+    cleanup: delete
+
+  # An annotation event (a real field patch on the platform side: PATCH /api/annotations/:id).
+  - name: annotation
+    vars: { dash: mwsv-annhost }
+    # The run's marker is kept in data.marker so that text can be one of the two fields.
+    create: { tool: create_annotation, args: { dashboardUid: "{{dash}}", text: "mwsv text one", tags: [mwsv, one], time: 1794700000000, data: { marker: "{{marker}}" } }, id: Payload.id, name_path: data.marker }
+    read: { tool: get_annotations, args: { dashboardUid: "{{dash}}", limit: 1000 }, items: Payload, match: id, ignore: [updated, avatarUrl] }
+    update:
+      tool: update_annotation
+      mode: field_patch
+      args: { id: "{{id}}", "{{field}}": "{{value}}" }
+    fields:
+      - { path: tags, values: [[mwsv, one], [mwsv, two]] }
+      - { path: text, values: ["mwsv text one", "mwsv text two"] }
+    delete: { tool: delete_annotation, args: { id: "{{id}}" } }
+    list: { tool: get_annotations, args: { dashboardUid: "{{dash}}", limit: 1000 }, items: Payload, id: id, name: data.marker }
+    cleanup: delete
+    missing_id: 999999999
+    control:
+      base_env: GRAFANA_URL
+      auth: { bearer_env: GRAFANA_SERVICE_ACCOUNT_TOKEN }
+      read: { http: [GET, "/api/annotations/{{id}}"] }
+      patch: { http: [PATCH, "/api/annotations/{{id}}"], body: { "{{field}}": "{{value}}" } }
+      delete: { http: [DELETE, "/api/annotations/{{id}}"] }

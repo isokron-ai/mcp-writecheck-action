@@ -1,0 +1,123 @@
+# mcp-writecheck manifest for kronicle-lite (isokron-ai/kronicle-lite), the hash-chained document store.
+#
+# The tester starts the stdio server itself, on a data directory made for this job only
+# (KRONICLE_LITE_DATA_DIR, set by dogfood/kronicle-lite/setup.sh, which also seeds the guard document
+# and two bystander documents). Nothing outside that directory is touched; the directory is thrown
+# away with the runner, so every object the run creates is ephemeral.
+#
+# What kronicle-lite offers, and how it is declared:
+#   - documents by slug: put_document (create or re-put, an upsert by design), and apply (up to 50
+#     put / supersede / tombstone ops in one transaction, expect_version per op: 0 = must not exist);
+#   - blocks of a document: supersede_block, tombstone_block (a tombstone is a soft delete: the block
+#     stays readable with tombstoned_at set, by design of the append-only chain);
+#   - reads by id: audit_assumptions answers the current state of a slug or a block id. There is no
+#     other read by id. Its document answer carries slug, title, revision and markdown_hash, so only
+#     one writable field (title) can be read back: no update block is declared (an update needs two
+#     independent fields), and the update-based checks are reported not tested;
+#   - no delete of a document, no read-only mode, no tool allow- or deny-list.
+
+mws: "0.9"
+
+server:
+  stdio: [node, dist/cli.js, serve]
+  cwd: ../../kl                          # the checked-out kronicle-lite, relative to this file
+  env_public: [KRONICLE_LITE_DATA_DIR, KRONICLE_LITE_PROJECT]
+  processes: separate
+  # MWS-RETRY-2 step (e): the tester stops its own server process and starts it again.
+  restart: { stop: graceful }
+
+target:
+  environment: test
+  confirm: kronicle-lite-dogfood
+  # The guard document is seeded into this job's fresh data directory by setup.sh.
+  guard: { tool: audit_assumptions, args: { claims: [ { symbol: dogfood-guard, value: 1 } ] }, path: "results[0].current.title", pattern: "^dogfood guard$" }
+
+limits: { write_budget: 5000, writes_per_second: 200, pairs: 34, stale_reps: 3, gate_reps: 2, timeout_ms: 20000, max_fuzz_cases: 200 }
+
+secrets:
+  token_params: [token, sig, signature, access_token]
+  issuing_tools: []
+
+canaries:
+  - { name: bystander-1, tool: audit_assumptions, args: { claims: [ { symbol: dogfood-bystander-1, value: 1 } ] }, path: "results[0].current" }
+  - { name: bystander-2, tool: audit_assumptions, args: { claims: [ { symbol: dogfood-bystander-2, value: 1 } ] }, path: "results[0].current" }
+
+review:
+  by: IsoKron dogfood workflow (rules written before the run, from kronicle-lite's documented error texts)
+  conflict_says_not_applied: "rolled_back|nothing (was )?(written|committed|applied)"
+  conflict_says_reread: "current revision is|re-?read"
+  rejection_gives_reason: "must|expected|invalid|required|not allowed|unknown|too (long|big)|refused|not live|reserved"
+  stale_writes_disclosed: "stale|not detected|best-effort"
+
+patterns:
+  not_used: '\bnot used\b|\bignored\b'
+
+# Arguments for the annotation checks (MWS-ANN-1 to ANN-3, ANN-5), each called on a scratch object.
+# supersede_block (destructiveHint: false) is not called here: the check counts a replaced field as
+# named only when an argument of the same name is passed, and supersede_block names the block's
+# content through new_content, so its record would not say anything true about the server.
+calls:
+  tombstone_block: { resource: block, args: { block_id: "{{id}}", reason: dogfood annotation check } }
+  recall: { resource: block, args: { query: paragraph } }
+  verify_chain: { resource: block, args: {} }
+  audit_assumptions: { resource: block, args: { claims: [ { symbol: "{{id}}", value: x } ] } }
+  audit_query: { resource: block, args: { audit_id: dogfood-audit } }
+  anchor_status: { resource: block, args: {} }
+  checkpoint_chain: { resource: block, args: {} }
+
+resources:
+  # Documents made by put_document. The slug is the id.
+  - name: document
+    create: { tool: put_document, args: { slug: "{{marker}}", title: "{{marker}}", markdown: "# {{marker}}\n\ndocres paragraph\n" }, id: slug, name_path: slug }
+    read: { tool: audit_assumptions, args: { claims: [ { symbol: "{{id}}", value: 0 } ] }, object: "results[0].current", ignore: [updated_at] }
+    # The only listing is recall (full-text search over live blocks, at most 50 hits): each document of
+    # this resource has one heading block holding its slug and the word "docres".
+    list: { tool: recall, args: { query: "{{prefix}} docres", top_k: 50, include_receipts: false }, items: hits, id: doc_slug, name: doc_slug }
+    missing_id: dogfood-no-such-document
+    cleanup: ephemeral
+    # MWS-RETRY-2: put_document takes idempotency_key; the key is kept in the chain's events table,
+    # written in the same transaction as the event, so it survives any stop of the server.
+    idempotency:
+      args: { slug: "{{marker}}", title: "{{marker}}", markdown: "# {{marker}}\n\ndocres keyed\n" }
+      key: { arg: idempotency_key }
+      vary: slug
+      key_record_survives: { graceful: true, kill: true }
+    failures:
+      - { name: put_invalid_slug, tool: put_document, args: { slug: "Not A Slug", title: "{{prefix}}x", markdown: "x\n" } }
+      - { name: tombstone_missing_block, tool: tombstone_block, args: { block_id: "00000000-0000-4000-8000-000000000000", reason: dogfood } }
+
+  # Documents made by apply with expect_version 0 (must not exist): a create that does not overwrite.
+  - name: document-apply
+    create: { tool: apply, args: { ops: [ { op: put, id: c1, slug: "{{key}}", title: "{{marker}}", markdown: "# {{key}}\n\napplyres paragraph\n", expect_version: 0 } ] }, id: "ops[0].target.slug", name_path: slug }
+    read: { tool: audit_assumptions, args: { claims: [ { symbol: "{{id}}", value: 0 } ] }, object: "results[0].current", ignore: [updated_at] }
+    list: { tool: recall, args: { query: "{{prefix}} applyres", top_k: 50, include_receipts: false }, items: hits, id: doc_slug, name: doc_slug }
+    key: { arg: slug, vary: { arg: title, path: title } }
+    missing_id: dogfood-no-such-document
+    cleanup: ephemeral
+    # MWS-RETRY-2 on apply: a repeat with the same key answers the first result with replayed: true;
+    # the same key with another plan is refused (idempotency_key_reused).
+    idempotency:
+      args: { ops: [ { op: put, id: c1, slug: "{{marker}}", title: "{{marker}}", markdown: "# {{marker}}\n\napplyres keyed\n", expect_version: 0 } ] }
+      key: { arg: idempotency_key }
+      id: "ops[0].target.slug"
+      replay_marker: replayed
+      key_record_survives: { graceful: true, kill: true }
+    # MWS-ATOM-1 / ATOM-2: three puts in one all-or-nothing apply, each expecting revision 1.
+    multi:
+      - tool: apply
+        args:
+          ops:
+            - { op: put, id: m0, slug: "{{ids[0]}}", title: batch title, markdown: "batch\n", expect_version: 1 }
+            - { op: put, id: m1, slug: "{{ids[1]}}", title: batch title, markdown: "batch\n", expect_version: 1 }
+            - { op: put, id: m2, slug: "{{ids[2]}}", title: batch title, markdown: "batch\n", expect_version: 1 }
+        effect: { path: title, value: batch title }
+        invalid_id: dogfood-no-such-document
+    failures:
+      - { name: apply_stale_expect_version, tool: apply, args: { ops: [ { op: put, id: f1, slug: "{{id}}", title: "{{prefix}}stale", markdown: "stale\n", expect_version: 99 } ] } }
+
+  # Blocks: the first block of a document put_document makes. Read by block id.
+  - name: block
+    create: { tool: put_document, args: { slug: "{{marker}}", title: "{{marker}}", markdown: "{{marker}} paragraph\n" }, id: "blocks[0].block_id", name_path: content }
+    read: { tool: audit_assumptions, args: { claims: [ { symbol: "{{id}}", value: x } ] }, object: "results[0].current" }
+    missing_id: 00000000-0000-4000-8000-000000000000
+    cleanup: ephemeral

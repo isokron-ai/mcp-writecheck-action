@@ -1,0 +1,126 @@
+# Dogfood: this action against kronicle-lite (isokron-ai/kronicle-lite), every night and on demand.
+#
+# kronicle-lite is a local stdio server over one SQLite file. The job builds it at a pinned commit,
+# makes a fresh data directory for this job only (dogfood/kronicle-lite/setup.sh seeds a guard
+# document and two bystander documents there), and runs plan, catalog and a full run with
+# fail-on: must. Every object the run creates lives in that directory and goes with the runner.
+#
+# The plan hash below was read and accepted by a person (the action's rule: never take a hash from
+# a plan job's output). When kronicle-lite, the manifest or the CLI pin changes, the full run is
+# refused with a hash mismatch: read the new plan in the plan step's summary and update the hash.
+#
+# Security: workflow_dispatch and schedule only (no pull_request, never pull_request_target), so a
+# fork never gets MWS_CLI_TOKEN (read-only on isokron-ai/mcp-write-safety, used for the CLI fetch
+# only). kronicle-lite is public and checked out without a token. Third-party actions are pinned
+# by full SHA.
+
+name: "dogfood: kronicle-lite"
+
+on:
+  workflow_dispatch:
+    inputs:
+      cli-ref:
+        description: mcp-writecheck commit to test with (full 40-character SHA). Empty for the action's default.
+        required: false
+        default: ''
+      plan-hashes:
+        description: "Accepted plan hashes for that CLI, after reading the plans: space-separated job=hash pairs (job names as in this file)."
+        required: false
+        default: ''
+  schedule:
+    - cron: '41 3 * * *'
+  pull_request:
+    paths: ['dogfood/kronicle-lite/**', 'dogfood/*.sh', '.github/workflows/dogfood-kronicle-lite.yml', 'action.yml', 'contract.mjs', 'src/**']
+  push:
+    branches: [main]
+    paths: ['dogfood/kronicle-lite/**', 'dogfood/*.sh', '.github/workflows/dogfood-kronicle-lite.yml', 'action.yml', 'contract.mjs', 'src/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dogfood-kronicle-lite-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PLAN_HASHES: ${{ inputs.plan-hashes }}
+  # isokron-ai/kronicle-lite main, 0.11.2 (14 Nov 2026).
+  KL_REF: 3bac5a73266c668fe77ed831924cded90e18a7b0
+
+jobs:
+  own:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PLAN_HASH: ddd33f124a3e5c40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The CLI first, before any server or third-party code runs in this job: the only step with the token.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - id: cliref
+        name: Choose the CLI commit
+        env:
+          INPUT_REF: ${{ inputs.cli-ref }}
+        run: dogfood/cli-ref.sh
+      - name: Check out mcp-writecheck
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: isokron-ai/mcp-write-safety
+          ref: ${{ steps.cliref.outputs.ref }}
+          token: ${{ secrets.MWS_CLI_TOKEN }}
+          path: mws-cli
+          sparse-checkout: packages/writecheck
+          persist-credentials: false
+      - name: Build mcp-writecheck
+        run: dogfood/build-cli.sh
+      - name: Check out kronicle-lite
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: isokron-ai/kronicle-lite
+          ref: ${{ env.KL_REF }}
+          path: kl
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      # Install scripts run: better-sqlite3 installs its prebuilt native module that way.
+      - name: Build kronicle-lite
+        working-directory: kl
+        run: npm ci --no-audit --no-fund && npm run build
+      - name: A fresh data directory, seeded
+        run: dogfood/kronicle-lite/setup.sh
+      - id: plan
+        name: Plan
+        uses: ./
+        with:
+          manifest: dogfood/kronicle-lite/writecheck.yaml
+          mode: plan
+          artifact-name: kronicle-lite-plan
+          cli-path: ${{ env.MWSC_CLI_PATH }}
+      - name: Compare the plan hash with the accepted one
+        env:
+          SEEN: ${{ steps.plan.outputs.plan-hash }}
+        run: dogfood/check-plan-hash.sh "$PLAN_HASH" "$SEEN" own
+      - name: Catalog
+        uses: ./
+        with:
+          manifest: dogfood/kronicle-lite/writecheck.yaml
+          mode: catalog
+          fail-on: must
+          artifact-name: kronicle-lite-catalog
+          cli-path: ${{ env.MWSC_CLI_PATH }}
+      - name: Full run
+        uses: ./
+        with:
+          manifest: dogfood/kronicle-lite/writecheck.yaml
+          mode: full
+          fail-on: must
+          confirm-target: kronicle-lite-dogfood
+          plan-hash: ${{ env.ACCEPTED_PLAN_HASH }}
+          artifact-name: kronicle-lite-full
+          cli-path: ${{ env.MWSC_CLI_PATH }}

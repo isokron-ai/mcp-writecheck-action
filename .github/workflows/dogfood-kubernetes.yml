@@ -1,0 +1,182 @@
+# Dogfood: this action against the Kubernetes MCP server research build, every night and on demand.
+#
+#   research  isokron-ai/kubernetes-mcp-writepath-experiment: v0.1.2 plus the experiment's bug-fix and usability
+#             patches, built from source with the experiment's harness/build/build.sh (which checks the patched
+#             tree against the tag research-v0.1.2). Backend: a disposable kind cluster made inside the job
+#             (dogfood/kubernetes/up.sh), with fixtures (seed.sh). Plan, catalog, then a full run with fail-on: must.
+#   vendor    the upstream v0.1.2 release. DISABLED: it needs the owner's go before it runs here, because this
+#             repository's job logs and summaries are public and some findings on upstream builds are unreported.
+#
+# The plan hash was read and accepted by a person (never taken from a plan step's output). When the experiment pin,
+# the manifest or the CLI pin changes, the full run is refused: read the new plan in the plan step's summary and update
+# PLAN_HASH.
+#
+# Security: workflow_dispatch and schedule only (never pull_request_target), so a fork never gets MWS_CLI_TOKEN, which
+# is read-only on isokron-ai/mcp-write-safety and used only for the CLI fetch. Third-party actions are pinned by full
+# SHA. The cluster's only credential is a service-account token minted in the job, written to a file and masked.
+
+name: "dogfood: kubernetes"
+
+on:
+  # TEMPORARY, dropped before the PR: workflow_dispatch needs the file on main.
+  push:
+    branches: ['dogfood/kubernetes']
+  workflow_dispatch:
+  schedule:
+    - cron: '19 4 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dogfood-kubernetes-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # isokron-ai/kubernetes-mcp-writepath-experiment main (its harness and the tags upstream-v0.1.2 and research-v0.1.2).
+  EXP_REF: eddb5c72f591709cbc2c4a92f0fb350e1e475c5b
+  # The experiment's harness/build/PIN: KIND_VERSION, and the Go release the measured builds used.
+  KIND_VERSION: v0.33.0
+  GO_VERSION: '1.26.11'
+  # The same loopback proxies in every step, so that every step arrives at the same plan hash.
+  MWSV_K8S_API: http://127.0.0.1:4902
+  MWSV_K8S_CONTROL: http://127.0.0.1:4903
+
+jobs:
+  research:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PLAN_HASH: cbf9737cd567e697
+      MWSV_KMS_BIN: ${{ github.workspace }}/exp/harness/build/out/research/kubernetes-mcp-server
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out the experiment
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: isokron-ai/kubernetes-mcp-writepath-experiment
+          ref: ${{ env.EXP_REF }}
+          path: exp
+          fetch-depth: 0          # build.sh reads the trees of the tags upstream-v0.1.2 and research-v0.1.2
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Build the research server
+        env:
+          GOTOOLCHAIN: local
+        run: exp/harness/build/build.sh research
+      - name: Install kind
+        env:
+          GOTOOLCHAIN: local
+        run: |
+          go install "sigs.k8s.io/kind@$KIND_VERSION"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Create the cluster
+        run: dogfood/kubernetes/up.sh exp
+      - name: Fixtures
+        run: dogfood/kubernetes/seed.sh
+      - id: plan
+        name: Plan
+        uses: ./
+        with:
+          manifest: dogfood/kubernetes/writecheck.yaml
+          mode: plan
+          artifact-name: kubernetes-research-plan
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+      - name: Compare the plan hash with the accepted one
+        env:
+          SEEN: ${{ steps.plan.outputs.plan-hash }}
+        run: dogfood/check-plan-hash.sh "$PLAN_HASH" "$SEEN"
+      - name: Catalog
+        uses: ./
+        with:
+          manifest: dogfood/kubernetes/writecheck.yaml
+          mode: catalog
+          fail-on: must
+          artifact-name: kubernetes-research-catalog
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+      - name: Full run
+        uses: ./
+        with:
+          manifest: dogfood/kubernetes/writecheck.yaml
+          mode: full
+          fail-on: must
+          confirm-target: mwsv-kind
+          plan-hash: ${{ env.PLAN_HASH }}
+          artifact-name: kubernetes-research-full
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+      - name: Objects of the run still in the cluster
+        if: always()
+        run: |
+          [ -x "${MWSV_KUBECTL:-}" ] || exit 0
+          KUBECONFIG="$ADMIN_KUBECONFIG" "$MWSV_KUBECTL" get ns,cm,pod,svc,vm,vmclone -A --no-headers \
+            -o custom-columns=K:.kind,NS:.metadata.namespace,N:.metadata.name,DT:.metadata.deletionTimestamp | grep 'mwsc-' || echo "none"
+
+  # Upstream v0.1.2 from npm with the vendor manifest. Needs the owner's go before it is enabled: job logs and summaries
+  # of this repository are public. PLAN_HASH must be read and pinned on the first enabled run.
+  vendor:
+    if: false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PLAN_HASH: '0000000000000000'
+      MWSV_KMS_BIN: ${{ github.workspace }}/vendor/node_modules/kubernetes-mcp-server-linux-amd64/bin/kubernetes-mcp-server-linux-amd64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out the experiment (cluster RBAC)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: isokron-ai/kubernetes-mcp-writepath-experiment
+          ref: ${{ env.EXP_REF }}
+          path: exp
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Install the upstream server
+        run: mkdir vendor && cd vendor && npm init -y >/dev/null && npm install --ignore-scripts --no-audit --no-fund kubernetes-mcp-server@0.1.2
+      - name: Install kind
+        env:
+          GOTOOLCHAIN: local
+        run: |
+          go install "sigs.k8s.io/kind@$KIND_VERSION"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Create the cluster
+        run: dogfood/kubernetes/up.sh exp
+      - name: Fixtures
+        run: dogfood/kubernetes/seed.sh
+      - id: plan
+        name: Plan
+        uses: ./
+        with:
+          manifest: dogfood/kubernetes/vendor.yaml
+          mode: plan
+          artifact-name: kubernetes-vendor-plan
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+      - name: Compare the plan hash with the accepted one
+        env:
+          SEEN: ${{ steps.plan.outputs.plan-hash }}
+        run: dogfood/check-plan-hash.sh "$PLAN_HASH" "$SEEN"
+      - name: Full run
+        uses: ./
+        with:
+          manifest: dogfood/kubernetes/vendor.yaml
+          mode: full
+          fail-on: must
+          confirm-target: mwsv-kind
+          plan-hash: ${{ env.PLAN_HASH }}
+          artifact-name: kubernetes-vendor-full
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}

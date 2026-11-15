@@ -1,0 +1,297 @@
+# Dogfood: this action against IsoKron's research build of the Payload MCP plugin, every night and
+# on demand.
+#
+#   research  isokron-ai/payload-mcp-writepath-experiment at a pinned commit: the sandbox Payload
+#             3.93.0 app (harness/app) with the research build v2.1 of @payloadcms/plugin-mcp
+#             swapped in by the experiment's own build script, on Postgres in a service container.
+#             plan, catalog, then a full run. The full run uses fail-on: none, and the job compares
+#             its violated records with dogfood/payload/expected-violations.research.txt: a new
+#             violated record, or a known one that no longer appears, fails the job. A run that does
+#             not complete, loses a bystander or cannot finish its clean-up fails it whatever
+#             fail-on says, and an independent REST snapshot before and after checks the documents
+#             the tester did not create.
+#   research-shim  the same through dogfood/payload/shim.mjs, which copies the JSON the plugin's
+#             answers already carry in their text into structuredContent, so that lists can be read
+#             (bystander inventory, clean-up sweep, MWS-RES-3), and adds a read-only guard tool.
+#   vendor    the same app with @payloadcms/plugin-mcp 3.93.0 as published upstream. DISABLED: it
+#             needs the owner's go. The logs and summaries of this repository are public.
+#
+# The plan hash was read and accepted by a person (never taken from a plan step's output). When the
+# experiment commit, the manifest or the CLI pin changes, the hash check fails: read the new plan in
+# the plan step's summary and update PLAN_HASH.
+#
+# Security: workflow_dispatch and schedule only, so a fork never gets MWS_CLI_TOKEN (read-only on
+# isokron-ai/mcp-write-safety, used only for the CLI fetch). Every credential of the app is
+# generated in the job and masked. Third-party actions are pinned by full SHA.
+
+name: "dogfood: payload"
+
+on:
+  # TEMPORARY, dropped before the PR: workflow_dispatch needs the file on main.
+  push:
+    branches: ['dogfood/payload']
+  workflow_dispatch:
+  schedule:
+    - cron: '7 4 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dogfood-payload-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # isokron-ai/payload-mcp-writepath-experiment main (its packages/plugin-mcp is research v2.1;
+  # the build script builds from the tags research-v2.1-v3.93.0 and upstream-v3.93.0).
+  EXP_REF: 35415109e36c45b6b0e9d9eb7686218a3b320e01
+  PAYLOAD_URL: http://127.0.0.1:4960
+
+jobs:
+  research:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:17.6-alpine@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94
+        env:
+          POSTGRES_USER: payload
+          POSTGRES_DB: payload
+          POSTGRES_PASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}-pg
+        ports: ['127.0.0.1:4900:5432']
+        options: >-
+          --health-cmd "pg_isready -U payload -d payload" --health-interval 3s --health-timeout 3s --health-retries 30
+    env:
+      PLAN_HASH: 94ca73397d82335f
+      DATABASE_URL: postgresql://payload:ci-${{ github.run_id }}-${{ github.run_attempt }}-pg@127.0.0.1:4900/payload
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out the experiment
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: isokron-ai/payload-mcp-writepath-experiment
+          ref: ${{ env.EXP_REF }}
+          path: exp
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Install pnpm
+        run: npm install --global --no-audit --no-fund pnpm@9.15.9
+      - name: Build the research app
+        run: dogfood/payload/stack.sh build research
+      - name: Start the app
+        run: dogfood/payload/stack.sh start research
+      - name: Seed users, the MCP key, the fixed rows and the bystanders
+        run: node dogfood/payload/setup.mjs
+      - name: Snapshot the documents the tester does not create
+        run: node dogfood/payload/snap.mjs > "$RUNNER_TEMP/snap-before.json"
+      - id: plan
+        name: Plan
+        uses: ./
+        with:
+          manifest: dogfood/payload/writecheck.research.yaml
+          mode: plan
+          artifact-name: payload-research-plan
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+      - name: Compare the plan hash with the accepted one
+        env:
+          SEEN: ${{ steps.plan.outputs.plan-hash }}
+        run: dogfood/check-plan-hash.sh "$PLAN_HASH" "$SEEN"
+      - name: Catalog
+        uses: ./
+        with:
+          manifest: dogfood/payload/writecheck.research.yaml
+          mode: catalog
+          fail-on: any
+          artifact-name: payload-research-catalog
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+      - id: full
+        name: Full run
+        uses: ./
+        with:
+          manifest: dogfood/payload/writecheck.research.yaml
+          mode: full
+          fail-on: none
+          confirm-target: dogfood-payload-research-v2.1
+          plan-hash: ${{ env.PLAN_HASH }}
+          artifact-name: payload-research-full
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+      - name: Compare the violated records with the known ones
+        if: always() && steps.full.outputs.results-path != ''
+        env:
+          RESULTS: ${{ steps.full.outputs.results-path }}
+        run: node dogfood/payload/expect.mjs "$RESULTS/results.json" dogfood/payload/expected-violations.research.txt
+      - name: Check the documents the tester does not create
+        if: always() && steps.full.outcome != 'skipped'
+        run: node dogfood/payload/snap.mjs --compare "$RUNNER_TEMP/snap-before.json"
+      - name: Stop the app
+        if: always()
+        run: dogfood/payload/stack.sh stop
+
+  research-shim:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:17.6-alpine@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94
+        env:
+          POSTGRES_USER: payload
+          POSTGRES_DB: payload
+          POSTGRES_PASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}-pg
+        ports: ['127.0.0.1:4900:5432']
+        options: >-
+          --health-cmd "pg_isready -U payload -d payload" --health-interval 3s --health-timeout 3s --health-retries 30
+    env:
+      PLAN_HASH: 8ff170819dbd5f0d
+      DATABASE_URL: postgresql://payload:ci-${{ github.run_id }}-${{ github.run_attempt }}-pg@127.0.0.1:4900/payload
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out the experiment
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: isokron-ai/payload-mcp-writepath-experiment
+          ref: ${{ env.EXP_REF }}
+          path: exp
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Install pnpm
+        run: npm install --global --no-audit --no-fund pnpm@9.15.9
+      - name: Build the research app
+        run: dogfood/payload/stack.sh build research
+      - name: Start the app
+        run: dogfood/payload/stack.sh start research
+      - name: Start the shim
+        run: dogfood/payload/stack.sh shim
+      - name: Seed users, the MCP key, the fixed rows and the bystanders
+        run: node dogfood/payload/setup.mjs
+      - name: Snapshot the documents the tester does not create
+        run: node dogfood/payload/snap.mjs > "$RUNNER_TEMP/snap-before.json"
+      - id: plan
+        name: Plan
+        uses: ./
+        with:
+          manifest: dogfood/payload/writecheck.research-shim.yaml
+          mode: plan
+          artifact-name: payload-research-shim-plan
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+      - name: Compare the plan hash with the accepted one
+        env:
+          SEEN: ${{ steps.plan.outputs.plan-hash }}
+        run: dogfood/check-plan-hash.sh "$PLAN_HASH" "$SEEN"
+      - name: Catalog
+        uses: ./
+        with:
+          manifest: dogfood/payload/writecheck.research-shim.yaml
+          mode: catalog
+          fail-on: any
+          artifact-name: payload-research-shim-catalog
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+      - id: full
+        name: Full run
+        uses: ./
+        with:
+          manifest: dogfood/payload/writecheck.research-shim.yaml
+          mode: full
+          fail-on: none
+          confirm-target: dogfood-payload-research-v2.1-shim
+          plan-hash: ${{ env.PLAN_HASH }}
+          artifact-name: payload-research-shim-full
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+      - name: Compare the violated records with the known ones
+        if: always() && steps.full.outputs.results-path != ''
+        env:
+          RESULTS: ${{ steps.full.outputs.results-path }}
+        run: node dogfood/payload/expect.mjs "$RESULTS/results.json" dogfood/payload/expected-violations.research-shim.txt
+      - name: Check the documents the tester does not create
+        if: always() && steps.full.outcome != 'skipped'
+        run: node dogfood/payload/snap.mjs --compare "$RUNNER_TEMP/snap-before.json"
+      - name: Stop the app and the shim
+        if: always()
+        run: dogfood/payload/stack.sh stop
+
+  vendor:
+    # DISABLED: needs the owner's go. This repository's logs and job summaries are public, and the
+    # upstream build's results would publish findings that have not all been reported upstream.
+    if: false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:17.6-alpine@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94
+        env:
+          POSTGRES_USER: payload
+          POSTGRES_DB: payload
+          POSTGRES_PASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}-pg
+        ports: ['127.0.0.1:4900:5432']
+        options: >-
+          --health-cmd "pg_isready -U payload -d payload" --health-interval 3s --health-timeout 3s --health-retries 30
+    env:
+      # Not accepted yet: read the vendor plan before pinning its hash.
+      PLAN_HASH: 'none'
+      DATABASE_URL: postgresql://payload:ci-${{ github.run_id }}-${{ github.run_attempt }}-pg@127.0.0.1:4900/payload
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out the experiment
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: isokron-ai/payload-mcp-writepath-experiment
+          ref: ${{ env.EXP_REF }}
+          path: exp
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Install pnpm
+        run: npm install --global --no-audit --no-fund pnpm@9.15.9
+      - name: Install the app (upstream plugin, unmodified)
+        run: dogfood/payload/stack.sh build vendor
+      - name: Start the app
+        run: dogfood/payload/stack.sh start vendor
+      - name: Seed users, the MCP key, the fixed rows and the bystanders
+        run: node dogfood/payload/setup.mjs
+      - name: Snapshot the documents the tester does not create
+        run: node dogfood/payload/snap.mjs > "$RUNNER_TEMP/snap-before.json"
+      - id: plan
+        name: Plan
+        uses: ./
+        with:
+          manifest: dogfood/payload/writecheck.vendor.yaml
+          mode: plan
+          artifact-name: payload-vendor-plan
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+      - name: Compare the plan hash with the accepted one
+        env:
+          SEEN: ${{ steps.plan.outputs.plan-hash }}
+        run: dogfood/check-plan-hash.sh "$PLAN_HASH" "$SEEN"
+      - id: full
+        name: Full run
+        uses: ./
+        with:
+          manifest: dogfood/payload/writecheck.vendor.yaml
+          mode: full
+          fail-on: none
+          confirm-target: dogfood-payload-vendor-3.93.0
+          plan-hash: ${{ env.PLAN_HASH }}
+          artifact-name: payload-vendor-full
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+      - name: Check the documents the tester does not create
+        if: always() && steps.full.outcome != 'skipped'
+        run: node dogfood/payload/snap.mjs --compare "$RUNNER_TEMP/snap-before.json"
+      - name: Stop the app
+        if: always()
+        run: dogfood/payload/stack.sh stop

@@ -1,0 +1,212 @@
+# mcp-writecheck manifest: @payloadcms/plugin-mcp 3.93.0 as published
+# upstream (the vendor build; its CI job is disabled), on the experiment's
+# sandbox Payload 3.93.0 app (harness/app) with Postgres, all started inside the CI job.
+#
+# Everything is on 127.0.0.1:
+#   4900  Postgres (service container)
+#   4960  the sandbox app under `next dev`: MCP at /api/mcp, REST at /api/<collection>
+#
+# Environment (written by dogfood/payload/setup.mjs, masked; values are never written here):
+#   MWSV_MCP_KEY   the MCP API key of editor-a (Bearer)
+#   MWSV_JWT_A     editor-a's REST token, for the control arm (same user as the MCP key)
+#
+# Field choice is systematic: per collection, two ordinary scalar fields are the tested pair, and
+# update.cases holds one MWS-RES-1 case for every other writable field. Seeded rows the run must
+# not change: task 1 (mwsv-guard-task), task 2 (mwsv-archived-task; a collection hook refuses
+# every update to an archived task).
+
+mws: "0.9"
+
+server:
+  url: http://127.0.0.1:4960/api/mcp
+  headers_env:
+    authorization: { env: MWSV_MCP_KEY, prefix: "Bearer " }
+
+target:
+  environment: test
+  confirm: dogfood-payload-vendor-3.93.0
+  # read_only declares that findTasks only reads (the upstream build annotates no tool).
+  guard: { tool: findTasks, args: { id: 1 }, pattern: "mwsv-guard-task", read_only: true }
+
+limits: { write_budget: 20000, writes_per_second: 50, pairs: 16, stale_reps: 3, timeout_ms: 30000, max_fuzz_cases: 200 }
+
+# The two seeded tasks, read one by one (a list answer cannot be read as a list).
+canaries:
+  - { name: seeded_guard_task, tool: findTasks, args: { id: 1 } }
+  - { name: seeded_archived_task, tool: findTasks, args: { id: 2 } }
+
+# Review-only clauses, answered in advance as rules (recorded as self-attested).
+review:
+  by: IsoKron (rules written before the run)
+  conflict_says_not_applied: "not (been )?(applied|written|changed|saved|updated)|nothing was"
+  rejection_gives_reason: "must|expected|required|greater|less|at (most|least)|one of|too (big|small|long|short)|unrecognized|not allowed"
+  stale_writes_disclosed: "stale|concurrent|overwrit|last[- ]write|not detected"
+
+resources:
+  # ── tasks: updateTasks as a field patch ──────────────────────────────────────────────────────
+  - name: task
+    create: { tool: createTasks, args: { title: "{{marker}}", status: doing, owner: ann, priority: 2 }, id: id, name_path: title }
+    # A list read: plugin-mcp answers a missing id with ordinary text (no isError), so only a list
+    # read can show that an object is gone.
+    read: { tool: findTasks, args: { where: '{"id":{"equals":{{id}}}}' }, ignore: [updatedAt, createdAt] }
+    update:
+      tool: updateTasks
+      mode: field_patch
+      args: { id: "{{id}}", "{{field}}": "{{value}}" }
+      cases:
+        - { name: set_priority, args: { priority: 4 }, expect: { priority: 4 } }
+    fields:
+      - { path: owner, values: [ann, bob] }
+      - { path: status, values: [doing, done] }
+    delete: { tool: deleteTasks, args: { id: "{{id}}" } }
+    # No list block: a list answer is one fenced json block per document, and only the first is read.
+    # list: { tool: findTasks, args: { where: '{"title":{"contains":"{{prefix}}"}}', limit: 100 }, items: docs, id: id, name: title }
+    missing_id: 999999999
+    cleanup: delete
+    multi:
+      - tool: updateTasks
+        args: { where: '{"id":{"in":{{json:ids}}}}', status: done }
+        effect: { path: status, value: done }
+        invalid_id: 2                      # the seeded archived task: the hook refuses its update
+        report: { applied: "$", id: id }
+    failures:
+      - { name: update_archived_task, tool: updateTasks, args: { id: 2, owner: "{{prefix}}x" } }
+      - { name: update_missing_task, tool: updateTasks, args: { id: "{{missing_id}}", owner: x } }
+      - { name: priority_above_max, tool: updateTasks, args: { id: "{{id}}", priority: 9 } }
+      # Not declared: a delete of an id that does not exist (spec NF-5: it may return a non-error result).
+    control:
+      base: http://127.0.0.1:4960
+      auth: { header: authorization, env: MWSV_JWT_A, prefix: "JWT " }
+      read: { http: [GET, "/api/tasks/{{id}}"] }
+      patch: { http: [PATCH, "/api/tasks/{{id}}"], body: { "{{field}}": "{{value}}" } }
+      delete: { http: [DELETE, "/api/tasks/{{id}}"] }
+      create: { http: [POST, "/api/tasks"], body: { title: "{{marker}}", status: doing, owner: ann, priority: 2 }, id: doc.id }
+
+  # ── listings: updateListings as a field patch ────────────────────────────────────────────────
+  # The run prefix is kept in sku (unique), so name is free to be one of the two tested fields.
+  - name: listing
+    create: { tool: createListings, args: { name: first name, sku: "{{marker}}", price: 10 }, id: id, name_path: sku }
+    read: { tool: findListings, args: { where: '{"id":{"equals":{{id}}}}' }, ignore: [updatedAt, createdAt] }
+    update:
+      tool: updateListings
+      mode: field_patch
+      args: { id: "{{id}}", "{{field}}": "{{value}}" }
+      cases:
+        - { name: set_market, args: { locale: en-GB }, expect: { locale: en-GB } }
+        - { name: set_draft_offer, args: { draft: true }, expect: { draft: true } }
+        - { name: set_slot, args: { select: homepage-hero }, expect: { select: homepage-hero } }
+    fields:
+      - { path: price, values: [10, 12] }
+      - { path: name, values: [first name, second name] }
+    delete: { tool: deleteListings, args: { id: "{{id}}" } }
+    # No list block: a list answer is one fenced json block per document, and only the first is read.
+    # list: { tool: findListings, args: { where: '{"sku":{"contains":"{{prefix}}"}}', limit: 100 }, items: docs, id: id, name: sku }
+    missing_id: 999999999
+    cleanup: delete
+    failures:
+      - { name: price_below_min, tool: updateListings, args: { id: "{{id}}", price: -5 } }
+    control:
+      base: http://127.0.0.1:4960
+      auth: { header: authorization, env: MWSV_JWT_A, prefix: "JWT " }
+      read: { http: [GET, "/api/listings/{{id}}"] }
+      patch: { http: [PATCH, "/api/listings/{{id}}"], body: { "{{field}}": "{{value}}" } }
+      delete: { http: [DELETE, "/api/listings/{{id}}"] }
+
+  # The same listings with the market and the draft-offer flag as the tested pair.
+  - name: listing-market
+    create: { tool: createListings, args: { name: market listing, sku: "{{marker}}", price: 10 }, id: id, name_path: sku }
+    read: { tool: findListings, args: { where: '{"id":{"equals":{{id}}}}' }, ignore: [updatedAt, createdAt] }
+    update: { tool: updateListings, mode: field_patch, args: { id: "{{id}}", "{{field}}": "{{value}}" } }
+    fields:
+      - { path: locale, values: [en-GB, de-DE] }
+      - { path: draft, values: [true, false] }
+    delete: { tool: deleteListings, args: { id: "{{id}}" } }
+    cleanup: delete
+    control:
+      base: http://127.0.0.1:4960
+      auth: { header: authorization, env: MWSV_JWT_A, prefix: "JWT " }
+      read: { http: [GET, "/api/listings/{{id}}"] }
+      patch: { http: [PATCH, "/api/listings/{{id}}"], body: { "{{field}}": "{{value}}" } }
+
+  # createListings with a caller-chosen unique key (sku): MWS-TGT-3.
+  - name: listing-key
+    create: { tool: createListings, args: { name: "{{marker}}", sku: "{{key}}", price: 10 }, id: id, name_path: sku }
+    read: { tool: findListings, args: { where: '{"id":{"equals":{{id}}}}' }, ignore: [updatedAt, createdAt] }
+    key: { arg: sku, vary: { arg: name, path: name } }
+    delete: { tool: deleteListings, args: { id: "{{id}}" } }
+    cleanup: delete
+
+  # ── posts: updatePosts as a field patch ──────────────────────────────────────────────────────
+  - name: post
+    create:
+      tool: createPosts
+      args: { title: "{{marker}}", slug: "{{marker}}", summary: first summary, category: guide, tags: [a, b], author: ann, readingMinutes: 3, items: [ { label: one, url: "https://example.test/1" }, { label: two, url: "https://example.test/2" } ] }
+      id: id
+      name_path: slug
+    read: { tool: findPosts, args: { where: '{"id":{"equals":{{id}}}}' }, ignore: [updatedAt, createdAt] }
+    update:
+      tool: updatePosts
+      mode: field_patch
+      args: { id: "{{id}}", "{{field}}": "{{value}}" }
+      cases:
+        - { name: set_title, args: { title: "{{prefix}}retitled" }, expect: { title: "{{prefix}}retitled" } }
+        - { name: set_summary, args: { summary: second summary }, expect: { summary: second summary } }
+        - { name: set_reading_minutes, args: { readingMinutes: 7 }, expect: { readingMinutes: 7 } }
+        - { name: set_tags, args: { tags: [x, y, z] }, expect: { tags: [x, y, z] } }
+        - { name: set_items, args: { items: [ { label: solo, url: "https://example.test/solo" } ] }, expect: { "items[0].label": solo, "items[0].url": "https://example.test/solo" } }
+        - { name: set_status_published, args: { _status: published }, expect: { _status: published } }
+    fields:
+      - { path: author, values: [ann, bob] }
+      - { path: category, values: [guide, release] }
+    delete: { tool: deletePosts, args: { id: "{{id}}" } }
+    # No list block: a list answer is one fenced json block per document, and only the first is read.
+    # list: { tool: findPosts, args: { where: '{"slug":{"contains":"{{prefix}}"}}', limit: 100 }, items: docs, id: id, name: slug }
+    missing_id: 999999999
+    cleanup: delete
+    failures:
+      - { name: reading_minutes_below_min, tool: updatePosts, args: { id: "{{id}}", readingMinutes: -1 } }
+    control:
+      base: http://127.0.0.1:4960
+      auth: { header: authorization, env: MWSV_JWT_A, prefix: "JWT " }
+      read: { http: [GET, "/api/posts/{{id}}"] }
+      patch: { http: [PATCH, "/api/posts/{{id}}"], body: { "{{field}}": "{{value}}" } }
+      delete: { http: [DELETE, "/api/posts/{{id}}"] }
+
+  # ── posts, the array field: an edit of one row of `items` has to send the whole array, built
+  # from what the caller read (the schema takes no row id), so the write carries base state.
+  # Declared full_replace over { author, items }: the stale-write test (MWS-CONC-2) applies.
+  - name: post-items
+    create:
+      tool: createPosts
+      args: { title: "{{marker}}", slug: "{{marker}}", category: guide, author: ann, items: [ { label: one, url: "https://example.test/1" }, { label: two, url: "https://example.test/2" } ] }
+      id: id
+      name_path: slug
+    read: { tool: findPosts, args: { where: '{"id":{"equals":{{id}}}}' }, ignore: [updatedAt, createdAt] }
+    update:
+      tool: updatePosts
+      mode: full_replace
+      args:
+        id: "{{id}}"
+        author: "{{object.author}}"
+        items:
+          - { label: "{{object.items[0].label}}", url: "{{object.items[0].url}}" }
+          - { label: "{{object.items[1].label}}", url: "{{object.items[1].url}}" }
+    fields:
+      - { path: "items[0].url", values: ["https://example.test/a0", "https://example.test/a1"] }
+      - { path: author, values: [ann, bob] }
+    delete: { tool: deletePosts, args: { id: "{{id}}" } }
+    cleanup: delete
+    control:
+      base: http://127.0.0.1:4960
+      auth: { header: authorization, env: MWSV_JWT_A, prefix: "JWT " }
+      read: { http: [GET, "/api/posts/{{id}}"] }
+      # A REST patch of one scalar (the second writer's change to author). REST cannot patch one
+      # array row without sending the array, so this template is valid for `author` only.
+      patch: { http: [PATCH, "/api/posts/{{id}}"], body: { "{{field}}": "{{value}}" } }
+      write:
+        http: [PATCH, "/api/posts/{{id}}"]
+        body:
+          author: "{{object.author}}"
+          items:
+            - { label: "{{object.items[0].label}}", url: "{{object.items[0].url}}" }
+            - { label: "{{object.items[1].label}}", url: "{{object.items[1].url}}" }

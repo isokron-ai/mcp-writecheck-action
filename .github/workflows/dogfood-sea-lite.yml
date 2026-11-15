@@ -1,0 +1,155 @@
+# Dogfood: this action against sea-lite (isokron-ai/sea-lite), every night and on demand.
+#
+#   sea-lite        plan, catalog and a full run of dogfood/sea-lite/writecheck.yaml, fail-on: must.
+#                   Expected green.
+#   cli-known-bugs  a cut-down manifest (writecheck-claim.yaml) on which the CLI at the pinned commit
+#                   gives known false `violated` results. The job passes only while exactly those
+#                   are present; it fails once the CLI is fixed, so the fix is noticed.
+#
+# sea-lite runs over stdio from the checked-out repository, with a store made for this job only in
+# the runner's temp folder (SEA_LITE_DATA_DIR); every ticket in it is disposable.
+#
+# The plan hashes below were read and accepted by a person (never taken from a plan step's output).
+# When sea-lite, a manifest or the CLI pin changes, the full run is refused at the hash check: read
+# the new plan in the plan step's summary, then update the hash.
+#
+# Security: workflow_dispatch and schedule only (no pull_request, never pull_request_target), so a
+# fork never gets MWS_CLI_TOKEN, which is read-only on isokron-ai/mcp-write-safety and is used for
+# the CLI fetch only (sea-lite is public). Third-party actions are pinned by full SHA.
+
+name: "dogfood: sea-lite"
+
+on:
+  # TEMPORARY, dropped before the PR: workflow_dispatch needs the file on main.
+  push:
+    branches: ['dogfood/sea-lite']
+  workflow_dispatch:
+  schedule:
+    - cron: '53 3 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dogfood-sea-lite-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # isokron-ai/sea-lite main (0.7.2).
+  SEA_LITE_REF: b536cc18d7eeb43a16da3d3bb1f88edfa6df3eb3
+
+jobs:
+  sea-lite:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PLAN_HASH: cfb016f2e5c0983d
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out sea-lite
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: isokron-ai/sea-lite
+          ref: ${{ env.SEA_LITE_REF }}
+          path: srv
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Build sea-lite
+        working-directory: srv
+        run: npm ci --no-audit --no-fund && npm run build
+      - name: Make and seed the job's store
+        run: |
+          echo "SEA_LITE_DATA_DIR=$RUNNER_TEMP/sea-lite-store" >> "$GITHUB_ENV"
+          SEA_LITE_DATA_DIR="$RUNNER_TEMP/sea-lite-store" dogfood/sea-lite/seed.sh
+      - id: plan
+        name: Plan
+        uses: ./
+        with:
+          manifest: dogfood/sea-lite/writecheck.yaml
+          mode: plan
+          artifact-name: sea-lite-plan
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+      - name: Compare the plan hash with the accepted one
+        env:
+          SEEN: ${{ steps.plan.outputs.plan-hash }}
+        run: dogfood/check-plan-hash.sh "$PLAN_HASH" "$SEEN"
+      - name: Catalog
+        uses: ./
+        with:
+          manifest: dogfood/sea-lite/writecheck.yaml
+          mode: catalog
+          fail-on: must
+          artifact-name: sea-lite-catalog
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+      - name: Full run
+        uses: ./
+        with:
+          manifest: dogfood/sea-lite/writecheck.yaml
+          mode: full
+          fail-on: must
+          confirm-target: sea-lite-dogfood
+          plan-hash: ${{ env.PLAN_HASH }}
+          artifact-name: sea-lite-full
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+
+  cli-known-bugs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PLAN_HASH: f386d848003b654c
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out sea-lite
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: isokron-ai/sea-lite
+          ref: ${{ env.SEA_LITE_REF }}
+          path: srv
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Build sea-lite
+        working-directory: srv
+        run: npm ci --no-audit --no-fund && npm run build
+      - name: Make and seed the job's store
+        run: |
+          echo "SEA_LITE_DATA_DIR=$RUNNER_TEMP/sea-lite-store" >> "$GITHUB_ENV"
+          SEA_LITE_DATA_DIR="$RUNNER_TEMP/sea-lite-store" dogfood/sea-lite/seed.sh
+      - id: plan
+        name: Plan
+        uses: ./
+        with:
+          manifest: dogfood/sea-lite/writecheck-claim.yaml
+          mode: plan
+          artifact-name: sea-lite-known-bugs-plan
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+      - name: Compare the plan hash with the accepted one
+        env:
+          SEEN: ${{ steps.plan.outputs.plan-hash }}
+        run: dogfood/check-plan-hash.sh "$PLAN_HASH" "$SEEN"
+      - id: full
+        name: Full run (known CLI false results expected)
+        continue-on-error: true
+        uses: ./
+        with:
+          manifest: dogfood/sea-lite/writecheck-claim.yaml
+          mode: full
+          fail-on: must
+          confirm-target: sea-lite-dogfood
+          plan-hash: ${{ env.PLAN_HASH }}
+          artifact-name: sea-lite-known-bugs-full
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+      - name: Only the known CLI false results may be violated
+        env:
+          OUTCOME: ${{ steps.full.outcome }}
+          EXIT_STATUS: ${{ steps.full.outputs.exit-status }}
+          CLI_EXIT: ${{ steps.full.outputs.cli-exit-code }}
+          RESULTS: ${{ steps.full.outputs.results-path }}
+        run: dogfood/sea-lite/expect-known-cli-bugs.sh

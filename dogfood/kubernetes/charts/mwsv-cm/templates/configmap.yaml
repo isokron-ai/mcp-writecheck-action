@@ -1,0 +1,10 @@
+# No metadata.namespace on purpose: like most charts, it relies on Helm to place the object in the release namespace.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    app.kubernetes.io/managed-by: Helm
+    mwsv/chart: mwsv-cm
+data:
+  greeting: {{ .Values.greeting | quote }}

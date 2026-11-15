@@ -1,0 +1,155 @@
+# Stand-ins for the KubeVirt CRDs (group, version, kind, plural and scope of KubeVirt v1.9.0; any body accepted).
+# No operator, no webhook, no VM ever runs: a VirtualMachine here is an inert API object.
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: virtualmachines.kubevirt.io
+  labels: {mwsv/addon: kubevirt-crds-standin}
+spec:
+  group: kubevirt.io
+  scope: Namespaced
+  names: {kind: VirtualMachine, listKind: VirtualMachineList, plural: virtualmachines, singular: virtualmachine, shortNames: [vm, vms]}
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      subresources: {status: {}}
+      schema:
+        openAPIV3Schema: {type: object, x-kubernetes-preserve-unknown-fields: true}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: virtualmachineinstances.kubevirt.io
+  labels: {mwsv/addon: kubevirt-crds-standin}
+spec:
+  group: kubevirt.io
+  scope: Namespaced
+  names: {kind: VirtualMachineInstance, listKind: VirtualMachineInstanceList, plural: virtualmachineinstances, singular: virtualmachineinstance, shortNames: [vmi, vmis]}
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      subresources: {status: {}}
+      schema:
+        openAPIV3Schema: {type: object, x-kubernetes-preserve-unknown-fields: true}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: virtualmachineinstancemigrations.kubevirt.io
+  labels: {mwsv/addon: kubevirt-crds-standin}
+spec:
+  group: kubevirt.io
+  scope: Namespaced
+  names: {kind: VirtualMachineInstanceMigration, listKind: VirtualMachineInstanceMigrationList, plural: virtualmachineinstancemigrations, singular: virtualmachineinstancemigration, shortNames: [vmim, vmims]}
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      subresources: {status: {}}
+      schema:
+        openAPIV3Schema: {type: object, x-kubernetes-preserve-unknown-fields: true}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: kubevirts.kubevirt.io
+  labels: {mwsv/addon: kubevirt-crds-standin}
+spec:
+  group: kubevirt.io
+  scope: Namespaced
+  names: {kind: KubeVirt, listKind: KubeVirtList, plural: kubevirts, singular: kubevirt, shortNames: [kv, kvs]}
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      subresources: {status: {}}
+      schema:
+        openAPIV3Schema: {type: object, x-kubernetes-preserve-unknown-fields: true}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: virtualmachineclones.clone.kubevirt.io
+  labels: {mwsv/addon: kubevirt-crds-standin}
+spec:
+  group: clone.kubevirt.io
+  scope: Namespaced
+  names: {kind: VirtualMachineClone, listKind: VirtualMachineCloneList, plural: virtualmachineclones, singular: virtualmachineclone, shortNames: [vmclone, vmclones]}
+  versions:
+    - name: v1beta1
+      served: true
+      storage: true
+      subresources: {status: {}}
+      schema:
+        openAPIV3Schema: {type: object, x-kubernetes-preserve-unknown-fields: true}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: virtualmachineinstancetypes.instancetype.kubevirt.io
+  labels: {mwsv/addon: kubevirt-crds-standin}
+spec:
+  group: instancetype.kubevirt.io
+  scope: Namespaced
+  names: {kind: VirtualMachineInstancetype, listKind: VirtualMachineInstancetypeList, plural: virtualmachineinstancetypes, singular: virtualmachineinstancetype, shortNames: [vminstancetype]}
+  versions:
+    - name: v1beta1
+      served: true
+      storage: true
+      subresources: {status: {}}
+      schema:
+        openAPIV3Schema: {type: object, x-kubernetes-preserve-unknown-fields: true}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: virtualmachineclusterinstancetypes.instancetype.kubevirt.io
+  labels: {mwsv/addon: kubevirt-crds-standin}
+spec:
+  group: instancetype.kubevirt.io
+  scope: Cluster
+  names: {kind: VirtualMachineClusterInstancetype, listKind: VirtualMachineClusterInstancetypeList, plural: virtualmachineclusterinstancetypes, singular: virtualmachineclusterinstancetype, shortNames: [vmclusterinstancetype]}
+  versions:
+    - name: v1beta1
+      served: true
+      storage: true
+      subresources: {status: {}}
+      schema:
+        openAPIV3Schema: {type: object, x-kubernetes-preserve-unknown-fields: true}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: virtualmachinepreferences.instancetype.kubevirt.io
+  labels: {mwsv/addon: kubevirt-crds-standin}
+spec:
+  group: instancetype.kubevirt.io
+  scope: Namespaced
+  names: {kind: VirtualMachinePreference, listKind: VirtualMachinePreferenceList, plural: virtualmachinepreferences, singular: virtualmachinepreference, shortNames: [vmpref]}
+  versions:
+    - name: v1beta1
+      served: true
+      storage: true
+      subresources: {status: {}}
+      schema:
+        openAPIV3Schema: {type: object, x-kubernetes-preserve-unknown-fields: true}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: virtualmachineclusterpreferences.instancetype.kubevirt.io
+  labels: {mwsv/addon: kubevirt-crds-standin}
+spec:
+  group: instancetype.kubevirt.io
+  scope: Cluster
+  names: {kind: VirtualMachineClusterPreference, listKind: VirtualMachineClusterPreferenceList, plural: virtualmachineclusterpreferences, singular: virtualmachineclusterpreference, shortNames: [vmcp]}
+  versions:
+    - name: v1beta1
+      served: true
+      storage: true
+      subresources: {status: {}}
+      schema:
+        openAPIV3Schema: {type: object, x-kubernetes-preserve-unknown-fields: true}

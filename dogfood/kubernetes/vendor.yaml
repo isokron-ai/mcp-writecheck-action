@@ -1,0 +1,273 @@
+# mcp-writecheck manifest for the UPSTREAM Kubernetes MCP server v0.1.2 (npm kubernetes-mcp-server@0.1.2), the vendor
+# build the research build is compared with. Used only by the disabled `vendor` job of dogfood-kubernetes.yml, which
+# needs the owner's go before it runs in public CI. Same cluster, fixtures and environment as writecheck.yaml.
+
+mws: "0.9"
+
+server:
+  stdio: [bash, launch-kms.sh]         # writes the TOML the server needs from the variables below
+  cwd: .
+  env_public: [MWSV_KMS_BIN, MWSV_K8S_API, MWSV_KMS_TOOLSETS]
+  processes: separate
+
+target:
+  environment: test
+  confirm: mwsv-kind
+  guard:
+    tool: resources_get
+    args: { apiVersion: v1, kind: ConfigMap, name: mwsv-guard, namespace: mwsv-a }
+    path: data.cluster
+    pattern: "^mwsv-kind$"
+
+backend:
+  gate: { rewrite_env: MWSV_K8S_API }
+
+limits: { write_budget: 6000, writes_per_second: 20, pairs: 30, stale_reps: 3, gate_reps: 2, timeout_ms: 60000, max_fuzz_cases: 40 }
+
+settings:
+  read_only: { env: MWSV_KMS_READ_ONLY, on: "true", valid: ["true", "false"] }
+  tool_filters:
+    - { env: MWSV_KMS_ENABLED_TOOLS, kind: allow }
+    - { env: MWSV_KMS_DISABLED_TOOLS, kind: deny }
+
+canaries:
+  - name: guard-configmap
+    tool: resources_get
+    args: { apiVersion: v1, kind: ConfigMap, name: mwsv-guard, namespace: mwsv-a }
+    path: data
+
+resources:
+  # ── Namespaces: the scopes. The server identity creates the namespace and binds, inside it, the
+  #    audit's write roles to itself (cluster/mwsv-rbac.yaml allows exactly that).
+  - name: namespace
+    create:
+      tool: resources_create_or_update
+      args:
+        resource: |
+          {"apiVersion":"v1","kind":"Namespace","metadata":{"name":"{{marker}}"}}
+          ---
+          {"apiVersion":"rbac.authorization.k8s.io/v1","kind":"RoleBinding","metadata":{"name":"mwsv-kms-probe-write","namespace":"{{marker}}"},"roleRef":{"apiGroup":"rbac.authorization.k8s.io","kind":"ClusterRole","name":"kms-probe-write"},"subjects":[{"kind":"ServiceAccount","name":"kms","namespace":"mcp-audit-system"}]}
+          ---
+          {"apiVersion":"rbac.authorization.k8s.io/v1","kind":"RoleBinding","metadata":{"name":"mwsv-kms-helm-releases","namespace":"{{marker}}"},"roleRef":{"apiGroup":"rbac.authorization.k8s.io","kind":"ClusterRole","name":"kms-helm-releases"},"subjects":[{"kind":"ServiceAccount","name":"kms","namespace":"mcp-audit-system"}]}
+      id: "[0].metadata.name"
+      name_path: metadata.name
+    read:
+      tool: resources_get
+      args: { apiVersion: v1, kind: Namespace, name: "{{id}}" }
+      ignore: [metadata.resourceVersion, metadata.managedFields, status]
+    key: { arg: resource }
+    delete: { tool: resources_delete, args: { apiVersion: v1, kind: Namespace, name: "{{id}}" } }
+    cleanup: delete
+
+  # ── ConfigMap through resources_create_or_update, the object sent back as it was read (version included).
+  - name: configmap
+    vars: { ns: mwsv-a }
+    create:
+      tool: resources_create_or_update
+      args: { resource: '{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"{{marker}}","namespace":"{{ns}}"},"data":{"alpha":"a1"},"binaryData":{"blob":"YjE="}}' }
+      id: "[0].metadata.name"
+      name_path: metadata.name
+    read:
+      tool: resources_get
+      args: { apiVersion: v1, kind: ConfigMap, name: "{{id}}", namespace: "{{ns}}" }
+      ignore: [metadata.resourceVersion, metadata.managedFields]
+    update:
+      tool: resources_create_or_update
+      mode: full_replace
+      args: { resource: "{{json:object}}" }
+      # d3b536f: the tool sends a server-side apply with field ownership (MWS section 4: neither field patch nor full replace).
+      apply: true
+    fields:
+      - { path: data, values: [{ alpha: a1 }, { alpha: a2 }], skip: [empty] }
+      - { path: binaryData, values: [{ blob: "YjE=" }, { blob: "YjI=" }], skip: [empty] }
+    version: { read: metadata.resourceVersion }
+    delete: { tool: resources_delete, args: { apiVersion: v1, kind: ConfigMap, name: "{{id}}", namespace: "{{ns}}" } }
+    list: { tool: resources_list, args: { apiVersion: v1, kind: ConfigMap, namespace: "{{ns}}" }, items: items, id: Name, name: Name }
+    missing_id: mwsv-no-such-object
+    cleanup: delete
+    # A multi-document apply (MWS-ATOM-1, MWS-ATOM-2). The refused item is a name the API rejects.
+    multi:
+      - tool: resources_create_or_update
+        args:
+          resource: |
+            {"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"{{ids[0]}}","namespace":"{{ns}}"},"data":{"touched":"yes"}}
+            ---
+            {"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"{{ids[1]}}","namespace":"{{ns}}"},"data":{"touched":"yes"}}
+            ---
+            {"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"{{ids[2]}}","namespace":"{{ns}}"},"data":{"touched":"yes"}}
+        effect: { path: data.touched, value: "yes" }
+        invalid_id: Not_A_Valid_Name
+    # Control arm: the Kubernetes API through a loopback proxy as the control identity.
+    # write = a whole-object PUT carrying the resourceVersion that was read (the version precondition).
+    control:
+      base_env: MWSV_K8S_CONTROL
+      read: { http: [GET, "/api/v1/namespaces/{{ns}}/configmaps/{{id}}"] }
+      patch: { http: [PATCH, "/api/v1/namespaces/{{ns}}/configmaps/{{id}}"], headers: { content-type: application/merge-patch+json }, body: { "{{field}}": "{{value}}" } }
+      write: { http: [PUT, "/api/v1/namespaces/{{ns}}/configmaps/{{id}}"], body: "{{object}}" }
+      delete: { http: [DELETE, "/api/v1/namespaces/{{ns}}/configmaps/{{id}}"] }
+      create: { http: [POST, "/api/v1/namespaces/{{ns}}/configmaps"], body: { apiVersion: v1, kind: ConfigMap, metadata: { name: "{{marker}}" }, data: { alpha: a1 }, binaryData: { blob: "YjE=" } }, id: metadata.name }
+
+  # ── The same write path with the version left out of the object (name, data and binaryData only).
+  #    Control arm write = the API's own default for this operation: a server-side apply by the same
+  #    field manager WITHOUT force and without a version.
+  - name: configmap-norv
+    vars: { ns: mwsv-a }
+    create:
+      tool: resources_create_or_update
+      args: { resource: '{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"{{marker}}","namespace":"{{ns}}"},"data":{"alpha":"a1"},"binaryData":{"blob":"YjE="}}' }
+      id: "[0].metadata.name"
+      name_path: metadata.name
+    read:
+      tool: resources_get
+      args: { apiVersion: v1, kind: ConfigMap, name: "{{id}}", namespace: "{{ns}}" }
+      ignore: [metadata.resourceVersion, metadata.managedFields]
+    update:
+      tool: resources_create_or_update
+      mode: full_replace
+      args: { resource: '{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"{{id}}","namespace":"{{ns}}"},"data":{{json:object.data}},"binaryData":{{json:object.binaryData}}}' }
+      # d3b536f: the tool sends a server-side apply with field ownership (MWS section 4: neither field patch nor full replace).
+      apply: true
+    fields:
+      - { path: data, values: [{ alpha: a1 }, { alpha: a2 }], skip: [empty] }
+      - { path: binaryData, values: [{ blob: "YjE=" }, { blob: "YjI=" }], skip: [empty] }
+    cleanup: control_delete
+    # SEEDED, not part of the unaided comparison (the experiment's results say so): the same multi-document apply as
+    # under `configmap`, with the document separator written "--- # next document". The published
+    # findings K8S-06 and K8S-15 are about separators; the CLI has no separator probe of its own, so this
+    # entry shows only what its multi-item check says once a declaration happens to use such a separator.
+    multi:
+      - tool: resources_create_or_update
+        args:
+          resource: |
+            {"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"{{ids[0]}}","namespace":"{{ns}}"},"data":{"touched":"yes"}}
+            --- # next document
+            {"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"{{ids[1]}}","namespace":"{{ns}}"},"data":{"touched":"yes"}}
+            --- # next document
+            {"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"{{ids[2]}}","namespace":"{{ns}}"},"data":{"touched":"yes"}}
+        effect: { path: data.touched, value: "yes" }
+        invalid_id: Not_A_Valid_Name
+    control:
+      base_env: MWSV_K8S_CONTROL
+      read: { http: [GET, "/api/v1/namespaces/{{ns}}/configmaps/{{id}}"] }
+      patch: { http: [PATCH, "/api/v1/namespaces/{{ns}}/configmaps/{{id}}"], headers: { content-type: application/merge-patch+json }, body: { "{{field}}": "{{value}}" } }
+      write:
+        http: [PATCH, "/api/v1/namespaces/{{ns}}/configmaps/{{id}}?fieldManager=kubernetes-mcp-server"]
+        headers: { content-type: application/apply-patch+yaml }
+        body: { apiVersion: v1, kind: ConfigMap, metadata: { name: "{{id}}", namespace: "{{ns}}" }, data: "{{object.data}}", binaryData: "{{object.binaryData}}" }
+      delete: { http: [DELETE, "/api/v1/namespaces/{{ns}}/configmaps/{{id}}"] }
+      create: { http: [POST, "/api/v1/namespaces/{{ns}}/configmaps"], body: { apiVersion: v1, kind: ConfigMap, metadata: { name: "{{marker}}" }, data: { alpha: a1 }, binaryData: { blob: "YjE=" } }, id: metadata.name }
+
+  # ── A declared case for MWS-RES-1: an object that carries a finalizer nobody removes during the run.
+  #    The settle interval is 2 s.
+  - name: configmap-finalizer
+    vars: { ns: mwsv-a }
+    create:
+      tool: resources_create_or_update
+      args: { resource: '{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"{{marker}}","namespace":"{{ns}}","finalizers":["mwsv.isokron.test/hold"]},"data":{"alpha":"a1"}}' }
+      id: "[0].metadata.name"
+      name_path: metadata.name
+    read:
+      tool: resources_get
+      args: { apiVersion: v1, kind: ConfigMap, name: "{{id}}", namespace: "{{ns}}" }
+      settle_ms: 2000
+      ignore: [metadata.resourceVersion, metadata.managedFields]
+    delete: { tool: resources_delete, args: { apiVersion: v1, kind: ConfigMap, name: "{{id}}", namespace: "{{ns}}" } }
+    cleanup: delete
+
+  # ── Pods through pods_run, in one fixed namespace. The caller chooses the name (the key).
+  - name: pod
+    vars: { ns: mwsv-a }
+    create:
+      tool: pods_run
+      args: { image: "registry.k8s.io/pause:3.10", name: "{{marker}}", namespace: "{{ns}}", port: 8080 }
+      id: "[0].metadata.name"
+      name_path: metadata.name
+    read:
+      tool: pods_get
+      args: { name: "{{id}}", namespace: "{{ns}}" }
+      ignore: [metadata.resourceVersion, metadata.managedFields, metadata.generation, status, spec.nodeName]
+    key: { arg: name, vary: { arg: image, path: "spec.containers[0].image" } }
+    delete: { tool: pods_delete, args: { name: "{{id}}", namespace: "{{ns}}" } }
+    cleanup: delete
+    # The backend refuses part of this call: in mwsv-nosvcdel the server identity may delete the Pod
+    # and may not delete the Service that pods_run made with it (kms-probe-write-nosvcdelete, cluster/probe-rbac.yaml).
+    failures:
+      - { name: pod_delete_where_service_delete_is_refused, tool: pods_delete, args: { name: mwsv-fix-pod, namespace: mwsv-nosvcdel } }
+
+  # ── pods_run with its namespace argument as the scope (MWS-TGT-1).
+  - name: pod-scoped
+    scope:
+      resource: namespace
+      arg: namespace
+      default: default
+      list: { tool: pods_list_in_namespace, args: { namespace: "{{scope}}" }, items: items, id: Name, name: Name }
+    create:
+      tool: pods_run
+      args: { image: "registry.k8s.io/pause:3.10", name: "{{marker}}", namespace: "{{?scope}}" }
+      id: "[0].metadata.name"
+      name_path: Name
+    read:
+      tool: pods_list
+      args: {}
+      items: items
+      match: Name
+      ignore: [Age, Status, Ready, Restarts, IP, Node, '["Nominated Node"]', '["Readiness Gates"]']
+    cleanup: ephemeral
+
+  # ── helm_install with its namespace argument as the scope (MWS-TGT-1). What an install writes is the
+  #    chart's objects: this chart has one ConfigMap, named after the release. The read-back finds that
+  #    ConfigMap wherever it is; the per-scope list is the ConfigMaps of the scope.
+  - name: helm-release
+    vars: { chart: charts/mwsv-cm }
+    scope:
+      resource: namespace
+      arg: namespace
+      default: default
+      list: { tool: resources_list, args: { apiVersion: v1, kind: ConfigMap, namespace: "{{scope}}" }, items: items, id: Name, name: Name }
+    create:
+      tool: helm_install
+      args: { chart: "{{chart}}", name: "{{marker}}", namespace: "{{?scope}}" }
+      id: "[0].name"
+      name_path: Name
+    read:
+      tool: resources_list
+      args: { apiVersion: v1, kind: ConfigMap, labelSelector: "mwsv/chart=mwsv-cm" }
+      items: items
+      match: Name
+      ignore: [Age]
+    cleanup: ephemeral
+    # The backend refuses part of this call: in mwsv-denied the server identity cannot read Secrets,
+    # where Helm keeps the release mwsv-fix-denied (installed there by the control identity).
+    failures:
+      - { name: uninstall_where_release_lookup_is_refused, tool: helm_uninstall, args: { name: mwsv-fix-denied, namespace: mwsv-denied } }
+
+  # ── KubeVirt VirtualMachine through vm_create (a create with a caller-chosen name).
+  - name: vm
+    vars: { ns: mwsv-vm }
+    create:
+      tool: vm_create
+      args: { namespace: "{{ns}}", name: "{{marker}}", workload: "quay.io/containerdisks/fedora:41" }
+      id: "[0].metadata.name"
+      name_path: metadata.name
+    read:
+      tool: resources_get
+      args: { apiVersion: kubevirt.io/v1, kind: VirtualMachine, name: "{{id}}", namespace: "{{ns}}" }
+      ignore: [metadata.resourceVersion, metadata.managedFields, metadata.generation]
+    key: { arg: name, vary: { arg: workload, path: "spec.template.spec.volumes[0].containerDisk.image" } }
+    delete: { tool: resources_delete, args: { apiVersion: kubevirt.io/v1, kind: VirtualMachine, name: "{{id}}", namespace: "{{ns}}" } }
+    cleanup: delete
+
+  # ── vm_clone: creates a VirtualMachineClone for the fixture VM mwsv-fix-vm.
+  - name: vm-clone
+    vars: { ns: mwsv-vm, source: mwsv-fix-vm }
+    create:
+      tool: vm_clone
+      args: { namespace: "{{ns}}", name: "{{source}}", targetName: "{{marker}}" }
+      id: "[0].metadata.name"
+      name_path: spec.target.name
+    read:
+      tool: resources_get
+      args: { apiVersion: clone.kubevirt.io/v1beta1, kind: VirtualMachineClone, name: "{{id}}", namespace: "{{ns}}" }
+      ignore: [metadata.resourceVersion, metadata.managedFields, metadata.generation]
+    delete: { tool: resources_delete, args: { apiVersion: clone.kubevirt.io/v1beta1, kind: VirtualMachineClone, name: "{{id}}", namespace: "{{ns}}" } }
+    cleanup: delete
