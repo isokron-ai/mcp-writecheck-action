@@ -27,7 +27,7 @@ on:
         required: false
         default: ''
       manifest-from-cli:
-        description: Use the tiny-tracker manifest of the cli-ref commit (needs cli-ref) instead of dogfood/tiny-tracker/writecheck.yaml.
+        description: Use the tiny-tracker manifest of the cli-ref commit (needs cli-ref) instead of dogfood/tiny-tracker/writecheck.yaml. The server is still built from tiny-tracker-ref.
         type: boolean
         required: false
         default: false
@@ -83,16 +83,10 @@ jobs:
           path: tt
           sparse-checkout: examples/tiny-tracker
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 22
-      - name: Build tiny-tracker
-        working-directory: tt/examples/tiny-tracker
-        run: npm ci --ignore-scripts --no-audit --no-fund && npm run build
       - name: The CLI commit's own tiny-tracker manifest (manifest-from-cli)
         if: inputs.manifest-from-cli
         env:
-          NAME: cli-ref
+          NAME: cli-ref (manifest-from-cli needs it)
           REF: ${{ inputs.cli-ref }}
         run: dogfood/check-ref.sh
       - name: Check out that manifest
@@ -109,6 +103,12 @@ jobs:
       - name: Use it
         if: inputs.manifest-from-cli
         run: dogfood/tiny-tracker/manifest-from-cli.sh
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Build tiny-tracker
+        working-directory: tt/examples/tiny-tracker
+        run: npm ci --ignore-scripts --no-audit --no-fund && npm run build
       - name: Start the tiny-tracker backend
         run: dogfood/tiny-tracker/backend.sh start
       - id: plan
@@ -173,16 +173,10 @@ jobs:
           path: tt
           sparse-checkout: examples/tiny-tracker
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 22
-      - name: Build tiny-tracker
-        working-directory: tt/examples/tiny-tracker
-        run: npm ci --ignore-scripts --no-audit --no-fund && npm run build
       - name: The CLI commit's own tiny-tracker manifest (manifest-from-cli)
         if: inputs.manifest-from-cli
         env:
-          NAME: cli-ref
+          NAME: cli-ref (manifest-from-cli needs it)
           REF: ${{ inputs.cli-ref }}
         run: dogfood/check-ref.sh
       - name: Check out that manifest
@@ -199,6 +193,12 @@ jobs:
       - name: Use it
         if: inputs.manifest-from-cli
         run: dogfood/tiny-tracker/manifest-from-cli.sh
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Build tiny-tracker
+        working-directory: tt/examples/tiny-tracker
+        run: npm ci --ignore-scripts --no-audit --no-fund && npm run build
       - name: Start the tiny-tracker backend
         run: dogfood/tiny-tracker/backend.sh start
       - id: plan

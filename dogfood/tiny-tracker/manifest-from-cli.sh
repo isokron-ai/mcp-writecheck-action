@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Uses the tiny-tracker manifest of the chosen CLI commit (checked out at mwsm/ by the step before)
 # instead of dogfood/tiny-tracker/writecheck.yaml: a newer CLI can need keys an older one refuses.
-# The only change made to it is the server's cwd, which points at the checked-out tiny-tracker.
+# The only change made to it is the server's cwd, which points at the checked-out tiny-tracker; if
+# the upstream `cwd: .` line ever changes form, the check below fails the job.
 # Exports TT_MANIFEST.
 set -euo pipefail
 src=mwsm/examples/tiny-tracker/writecheck.yaml
