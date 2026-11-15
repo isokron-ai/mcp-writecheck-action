@@ -18,12 +18,23 @@
 name: "dogfood: kubernetes"
 
 on:
-  # TEMPORARY, dropped before the PR: workflow_dispatch needs the file on main.
-  push:
-    branches: ['dogfood/kubernetes']
   workflow_dispatch:
+    inputs:
+      cli-ref:
+        description: mcp-writecheck commit to test with (full 40-character SHA). Empty for the action's default.
+        required: false
+        default: ''
+      plan-hashes:
+        description: "Accepted plan hashes for that CLI, after reading the plans: space-separated job=hash pairs (job names as in this file)."
+        required: false
+        default: ''
   schedule:
     - cron: '19 4 * * *'
+  pull_request:
+    paths: ['dogfood/kubernetes/**', 'dogfood/*.sh', '.github/workflows/dogfood-kubernetes.yml', 'action.yml', 'contract.mjs', 'src/**']
+  push:
+    branches: [main]
+    paths: ['dogfood/kubernetes/**', 'dogfood/*.sh', '.github/workflows/dogfood-kubernetes.yml', 'action.yml', 'contract.mjs', 'src/**']
 
 permissions:
   contents: read
@@ -33,6 +44,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  PLAN_HASHES: ${{ inputs.plan-hashes }}
   # isokron-ai/kubernetes-mcp-writepath-experiment main (its harness and the tags upstream-v0.1.2 and research-v0.1.2).
   EXP_REF: eddb5c72f591709cbc2c4a92f0fb350e1e475c5b
   # The experiment's harness/build/PIN: KIND_VERSION, and the Go release the measured builds used.
@@ -44,6 +56,7 @@ env:
 
 jobs:
   research:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -53,6 +66,26 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The CLI first, before any server or third-party code runs in this job: the only step with the token.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - id: cliref
+        name: Choose the CLI commit
+        env:
+          INPUT_REF: ${{ inputs.cli-ref }}
+        run: dogfood/cli-ref.sh
+      - name: Check out mcp-writecheck
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: isokron-ai/mcp-write-safety
+          ref: ${{ steps.cliref.outputs.ref }}
+          token: ${{ secrets.MWS_CLI_TOKEN }}
+          path: mws-cli
+          sparse-checkout: packages/writecheck
+          persist-credentials: false
+      - name: Build mcp-writecheck
+        run: dogfood/build-cli.sh
       - name: Check out the experiment
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -89,11 +122,11 @@ jobs:
           manifest: dogfood/kubernetes/writecheck.yaml
           mode: plan
           artifact-name: kubernetes-research-plan
-          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+          cli-path: ${{ env.MWSC_CLI_PATH }}
       - name: Compare the plan hash with the accepted one
         env:
           SEEN: ${{ steps.plan.outputs.plan-hash }}
-        run: dogfood/check-plan-hash.sh "$PLAN_HASH" "$SEEN"
+        run: dogfood/check-plan-hash.sh "$PLAN_HASH" "$SEEN" research
       - name: Catalog
         uses: ./
         with:
@@ -101,7 +134,7 @@ jobs:
           mode: catalog
           fail-on: must
           artifact-name: kubernetes-research-catalog
-          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+          cli-path: ${{ env.MWSC_CLI_PATH }}
       - name: Full run
         uses: ./
         with:
@@ -109,9 +142,9 @@ jobs:
           mode: full
           fail-on: must
           confirm-target: mwsv-kind
-          plan-hash: ${{ env.PLAN_HASH }}
+          plan-hash: ${{ env.ACCEPTED_PLAN_HASH }}
           artifact-name: kubernetes-research-full
-          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+          cli-path: ${{ env.MWSC_CLI_PATH }}
       - name: Objects of the run still in the cluster
         if: always()
         run: |
@@ -132,6 +165,26 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The CLI first, before any server or third-party code runs in this job: the only step with the token.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - id: cliref
+        name: Choose the CLI commit
+        env:
+          INPUT_REF: ${{ inputs.cli-ref }}
+        run: dogfood/cli-ref.sh
+      - name: Check out mcp-writecheck
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: isokron-ai/mcp-write-safety
+          ref: ${{ steps.cliref.outputs.ref }}
+          token: ${{ secrets.MWS_CLI_TOKEN }}
+          path: mws-cli
+          sparse-checkout: packages/writecheck
+          persist-credentials: false
+      - name: Build mcp-writecheck
+        run: dogfood/build-cli.sh
       - name: Check out the experiment (cluster RBAC)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -165,11 +218,11 @@ jobs:
           manifest: dogfood/kubernetes/vendor.yaml
           mode: plan
           artifact-name: kubernetes-vendor-plan
-          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+          cli-path: ${{ env.MWSC_CLI_PATH }}
       - name: Compare the plan hash with the accepted one
         env:
           SEEN: ${{ steps.plan.outputs.plan-hash }}
-        run: dogfood/check-plan-hash.sh "$PLAN_HASH" "$SEEN"
+        run: dogfood/check-plan-hash.sh "$PLAN_HASH" "$SEEN" vendor
       - name: Full run
         uses: ./
         with:
@@ -177,6 +230,6 @@ jobs:
           mode: full
           fail-on: must
           confirm-target: mwsv-kind
-          plan-hash: ${{ env.PLAN_HASH }}
+          plan-hash: ${{ env.ACCEPTED_PLAN_HASH }}
           artifact-name: kubernetes-vendor-full
-          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+          cli-path: ${{ env.MWSC_CLI_PATH }}
