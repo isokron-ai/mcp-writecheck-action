@@ -202,7 +202,8 @@ jobs:
         with:
           node-version: 22
       - name: Install the upstream server
-        run: mkdir vendor && cd vendor && npm init -y >/dev/null && npm install --ignore-scripts --no-audit --no-fund kubernetes-mcp-server@0.1.2
+        # From the committed lockfile (dogfood/kubernetes/vendor-npm): every package pinned by version and integrity.
+        run: cp -R dogfood/kubernetes/vendor-npm vendor && cd vendor && npm ci --ignore-scripts --no-audit --no-fund
       - name: Install kind
         env:
           GOTOOLCHAIN: local

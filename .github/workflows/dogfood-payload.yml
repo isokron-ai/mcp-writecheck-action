@@ -104,7 +104,7 @@ jobs:
         with:
           node-version: 22
       - name: Install pnpm
-        run: npm install --global --no-audit --no-fund pnpm@9.15.9
+        run: dogfood/install-pnpm.sh
       - name: Build the research app
         run: dogfood/payload/stack.sh build research
       - name: Start Postgres (password made here, masked)
@@ -201,7 +201,7 @@ jobs:
         with:
           node-version: 22
       - name: Install pnpm
-        run: npm install --global --no-audit --no-fund pnpm@9.15.9
+        run: dogfood/install-pnpm.sh
       - name: Build the research app
         run: dogfood/payload/stack.sh build research
       - name: Start Postgres (password made here, masked)
@@ -303,7 +303,7 @@ jobs:
         with:
           node-version: 22
       - name: Install pnpm
-        run: npm install --global --no-audit --no-fund pnpm@9.15.9
+        run: dogfood/install-pnpm.sh
       - name: Install the app (upstream plugin, unmodified)
         run: dogfood/payload/stack.sh build vendor
       - name: Start Postgres (password made here, masked)

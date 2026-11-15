@@ -50,7 +50,7 @@ concurrency:
 env:
   PLAN_HASHES: ${{ inputs.plan-hashes }}
   # isokron-ai/mcp-grafana, branch iso/write-path.
-  FORK_REF: 527bc0fd8baea19a0097c2a369cb9a7417644480
+  FORK_REF: e551ab8bdbb2fe0daf3eb714ef6fbc03ad859ee0
   GRAFANA_IMAGE: grafana/grafana:13.3.0@sha256:488984b716c0862639f91a698adbe2862677a5a07bad42da5f03f3030883b205
   # The same URL in every step, so that every step arrives at the same plan hash.
   GRAFANA_URL: http://127.0.0.1:4930

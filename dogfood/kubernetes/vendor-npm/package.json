@@ -1,0 +1,8 @@
+{
+  "name": "dogfood-kubernetes-vendor",
+  "private": true,
+  "description": "The upstream kubernetes-mcp-server 0.1.2 for the disabled vendor job of dogfood-kubernetes.yml, installed with npm ci from the lockfile beside this file.",
+  "dependencies": {
+    "kubernetes-mcp-server": "0.1.2"
+  }
+}
