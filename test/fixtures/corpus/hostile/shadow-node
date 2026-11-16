@@ -1,0 +1,7 @@
+#!/bin/sh
+# A bin named `node` (the npm package `node` ships one): if it ran our CLI it could forge the record.
+# R2-2 puts the target's bin folder last on PATH, so this never runs in place of the image's node.
+case "$1" in
+  /opt/mwsc/*) echo "$*" > /work/out/node-shadowed.txt ;;
+esac
+exec /usr/local/bin/node "$@"

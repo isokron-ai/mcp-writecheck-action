@@ -17,8 +17,8 @@ import { test } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
-  backendRunArgs, catalogManifest, checkPinned, classifyCli, dockerEnvFrom, fill, installPlan, keepRegular, LABEL,
-  platformKey, publicExit, sandboxEnv, sandboxRunArgs, shuffled, volumeMount,
+  backendRunArgs, catalogManifest, checkDockerVersion, checkLane, checkNpmLock, checkPinned, checkPypiLock, classifyCli,
+  dockerEnvFrom, fill, installPlan, keepRegular, LABEL, platformKey, publicExit, sandboxEnv, sandboxRunArgs, shuffled, volumeMount,
 } from '../corpus/run-shard.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -70,6 +70,8 @@ test('C1: sandbox containers run as 10001, no capabilities, no-new-privileges, r
   assert.ok(a.includes('--read-only'));
   assert.match(pair('--tmpfs'), /^\/tmp:rw,nosuid,nodev/);
   assert.ok(a.includes('--pids-limit') && a.includes('--memory') && a.includes('--init'));
+  assert.equal(pair('--cpus'), '2');
+  assert.equal(sandboxRunArgs({ name: 'n', image: IMG, network: 'none', mounts, cpus: 1, cmd: ['x'] }).at(sandboxRunArgs({ name: 'n', image: IMG, network: 'none', mounts, cpus: 1, cmd: ['x'] }).indexOf('--cpus') + 1), '1');
   assert.equal(pair('--network'), 'corpus-r1-t01-run');
   assert.ok(!a.includes('--cap-add') && !a.includes('--privileged') && !a.includes('-v') && !a.includes('--volume'));
   assert.deepEqual(a.filter((x, i) => a[i - 1] === '--mount'), ['type=volume,src=corpus-r1-t01,dst=/work', 'type=volume,src=corpus-r1-cli,dst=/opt/mwsc,readonly']);
@@ -98,6 +100,7 @@ test('C1: backends drop every capability but an allowlisted few, and publish no 
   assert.equal(a[a.indexOf('--security-opt') + 1], 'no-new-privileges');
   assert.ok(!a.includes('-p') && !a.includes('--publish') && !a.includes('--privileged'));
   assert.equal(a[a.indexOf('--network-alias') + 1], 'b0');
+  assert.equal(a[a.indexOf('--cpus') + 1], '2');
   for (const cap of ['SYS_ADMIN', 'NET_ADMIN', 'ALL', 'SYS_PTRACE']) {
     assert.throws(() => backendRunArgs({ name: 'b', image: IMG, network: 'n', alias: 'b0', capAdd: [cap] }), /not allowed/);
   }
@@ -127,7 +130,7 @@ test('C1: platform comes from the Docker server and must be Linux', () => {
 
 test('M4: npm targets install with npm ci from the pinned lockfile; install scripts off unless asked', () => {
   assert.throws(() => installPlan({ ecosystem: 'npm', package: 'p' }, 'linux-x64'), /not hash-locked/);
-  const t = { ecosystem: 'npm', package: 'p', lock: { package_json: '{}', package_lock: '{}' } };
+  const t = { ecosystem: 'npm', package: 'p', lock: npmLock('p') };
   const p = installPlan(t, 'linux-x64');
   const ci = p.steps.find((s) => s.cmd[0] === 'npm' && s.cmd[1] === 'ci');
   assert.ok(ci.cmd.includes('--ignore-scripts'));
@@ -138,7 +141,7 @@ test('M4: npm targets install with npm ci from the pinned lockfile; install scri
 });
 
 test('M4: PyPI targets install with --require-hashes from the lock for this platform; the target itself offline', () => {
-  const t = { ecosystem: 'pypi', package: 'p', artifact: { file: 'p-1.0-py3-none-any.whl' }, lock: { pypi: { 'linux-x64': 'a==1 --hash=sha256:00\n' } } };
+  const t = { ecosystem: 'pypi', package: 'p', artifact: { file: 'p-1.0-py3-none-any.whl' }, lock: { pypi: { 'linux-x64': `a==1 --hash=sha256:${'0'.repeat(64)}\n` } } };
   assert.throws(() => installPlan(t, 'linux-arm64'), /not hash-locked for linux-arm64/);
   const p = installPlan(t, 'linux-x64');
   const deps = p.steps.find((s) => s.cmd.includes('-r'));
@@ -156,6 +159,89 @@ test('M4: binary targets unpack with no network', () => {
   const p = installPlan({ ecosystem: 'binary', artifact: { 'linux-x64': { file: 's.tgz' } } }, 'linux-x64');
   assert.ok(p.steps.every((s) => s.net === 'none'));
   assert.throws(() => installPlan({ ecosystem: 'binary', artifact: {} }, 'linux-x64'), /no artifact/);
+});
+
+// ------------------------------------------------------------------------------------------------
+// R2-5: locks fetch from the registries only
+// ------------------------------------------------------------------------------------------------
+
+/** A lock as prep-targets.py writes it: the target from its checked artifact, the rest from the registry. */
+function npmLock(pkg, more = {}) {
+  return {
+    package_json: JSON.stringify({ private: true, dependencies: { [pkg]: 'file:artifact.tgz' } }),
+    package_lock: JSON.stringify({ lockfileVersion: 3, requires: true, packages: {
+      '': { dependencies: { [pkg]: 'file:artifact.tgz' } },
+      [`node_modules/${pkg}`]: { version: '1.0.0', resolved: 'file:artifact.tgz', integrity: 'sha512-AAAA' },
+      'node_modules/dep': { version: '2.0.0', resolved: 'https://registry.npmjs.org/dep/-/dep-2.0.0.tgz', integrity: 'sha512-BBBB' },
+      'node_modules/dep/node_modules/inner': { version: '1.0.0', inBundle: true },
+      ...more,
+    } }),
+  };
+}
+
+test('R2-5: an npm lock fetches only from registry.npmjs.org, every package with an integrity hash', () => {
+  const t = (lock) => ({ ecosystem: 'npm', package: 'p', lock });
+  assert.doesNotThrow(() => checkNpmLock(t(npmLock('p'))));
+  assert.doesNotThrow(() => installPlan(t(npmLock('p')), 'linux-x64'));
+  const bad = [
+    [{ 'node_modules/x': { resolved: 'https://evil.example/x.tgz', integrity: 'sha512-C' } }, /outside/],
+    [{ 'node_modules/x': { resolved: 'https://registry.npmjs.org.evil.example/x.tgz', integrity: 'sha512-C' } }, /outside/],
+    [{ 'node_modules/x': { resolved: 'http://registry.npmjs.org/x/-/x-1.tgz', integrity: 'sha512-C' } }, /outside/],
+    [{ 'node_modules/x': { resolved: 'git+ssh://git@github.com/a/b.git#abc', integrity: 'sha512-C' } }, /outside/],
+    [{ 'node_modules/x': { resolved: 'file:../../etc' } }, /outside/],
+    [{ 'node_modules/x': { resolved: 'https://registry.npmjs.org/x/-/x-1.tgz' } }, /integrity/],
+    [{ 'node_modules/x': { version: '1.0.0' } }, /outside/],
+    [{ 'node_modules/x': { resolved: '../x', link: true } }, /link/],
+  ];
+  for (const [more, re] of bad) assert.throws(() => installPlan(t(npmLock('p', more)), 'linux-x64'), re, JSON.stringify(more));
+  // The target itself only from the checked artifact; package.json names nothing else.
+  const own = npmLock('p');
+  const pl = JSON.parse(own.package_lock);
+  pl.packages['node_modules/p'].resolved = 'https://registry.npmjs.org/p/-/p-1.tgz';
+  assert.throws(() => checkNpmLock(t({ ...own, package_lock: JSON.stringify(pl) })), /checked artifact/);
+  assert.throws(() => checkNpmLock(t({ ...own, package_json: JSON.stringify({ dependencies: { p: 'file:artifact.tgz', q: 'https://x/q.tgz' } }) })), /package.json/);
+  assert.throws(() => checkNpmLock(t({ ...own, package_json: JSON.stringify({ dependencies: { p: 'file:artifact.tgz' }, scripts: { preinstall: 'x' } }) })), /package.json/);
+  assert.throws(() => checkNpmLock(t({ ...own, package_lock: '{"lockfileVersion":1,"dependencies":{}}' })), /lockfileVersion/);
+  assert.throws(() => checkNpmLock(t({ ...own, package_lock: 'nope' })), /not JSON/);
+});
+
+test('R2-5: a PyPI lock is name==version with sha256 hashes only: no URL, VCS, file or option line', () => {
+  const h = (c) => `--hash=sha256:${c.repeat(64)}`;
+  const good = `# comment\nsix==1.17.0 \\\n    ${h('a')} \\\n    ${h('b')}\npywin32==306 ; sys_platform == 'win32' \\\n    ${h('c')}\nreq[socks,x]==2.0 ${h('d')}\n\n`;
+  assert.doesNotThrow(() => checkPypiLock(good));
+  assert.doesNotThrow(() => checkPypiLock(''));
+  for (const bad of [
+    `x @ https://evil.example/x-1.whl ${h('a')}`,
+    `x @ git+https://github.com/a/b ${h('a')}`,
+    `x==1.0`,
+    `--index-url https://evil.example/simple\nx==1.0 ${h('a')}`,
+    `--extra-index-url https://evil.example/simple`,
+    `-e ./x`,
+    `./x.whl ${h('a')}`,
+    `x>=1.0 ${h('a')}`,
+    `x==1.0 ; python_version > '3' @ https://e ${h('a')}`,
+    `x==1.0 --hash=md5:${'a'.repeat(32)}`,
+  ]) assert.throws(() => checkPypiLock(bad), /pypi lock/, bad);
+  const t = { ecosystem: 'pypi', package: 'p', artifact: { file: 'p-1.0-py3-none-any.whl' }, lock: { pypi: { 'linux-x64': `x @ https://e/x.whl ${h('a')}` } } };
+  assert.throws(() => installPlan(t, 'linux-x64'), /pypi lock/);
+});
+
+// ------------------------------------------------------------------------------------------------
+// R2-3 / R2-4: the Mac lane
+// ------------------------------------------------------------------------------------------------
+
+test('R2-3: on lane mac, or on a macOS host, no target with install scripts or a build', () => {
+  for (const f of [{ install_scripts: true }, { allow_build: true }]) {
+    assert.throws(() => checkLane(f, 'mac', 'linux'), /lane mac/);
+    assert.throws(() => checkLane(f, 'ci', 'darwin'), /lane mac/, 'CORPUS_LOCAL_LANES="mac ci" on the Mac');
+    assert.doesNotThrow(() => checkLane(f, 'ci', 'linux'));
+  }
+  assert.doesNotThrow(() => checkLane({}, 'mac', 'darwin'));
+});
+
+test('R2-4: Docker Engine older than 26.0.0 is refused (CVE-2024-29018)', () => {
+  for (const v of ['26.0.0', '26.1.4', '28.0.4', '29.9.3', '27.5.1\n']) assert.ok(checkDockerVersion(v), v);
+  for (const v of ['25.0.5', '24.0.9', '20.10.24', '', 'unknown', '2.0.0']) assert.throws(() => checkDockerVersion(v), /older than 26/, v);
 });
 
 // ------------------------------------------------------------------------------------------------
@@ -217,10 +303,12 @@ function stand({ format = 'isokron-corpus-targets/2', extra = [] } = {}) {
     bt('t01', sha),
     bt('t02', '0'.repeat(64)),
     { id: 't03', lane: 'mac', name: NAME, ecosystem: 'binary', package: NAME, version: '1', artifact: {}, server: { command: ['x'] } },
-    { ...bt('t04', sha), ecosystem: 'npm', artifact: { url: pathToFileURL(art).href, sha256: sha }, lock: { package_json: '{}', package_lock: '{}' }, setup: ['touch {{tdir}}/seed'] },
+    { ...bt('t04', sha), ecosystem: 'npm', artifact: { url: pathToFileURL(art).href, sha256: sha }, lock: npmLock(NAME), setup: ['touch {{tdir}}/seed'] },
     { ...bt('t05', sha), backends: [{ image: 'postgres:16', port: 5432 }] },
     { ...bt('t06', sha), backends: [{ image: IMG, port: 5432, cap_add: ['SYS_ADMIN'] }] },
     { ...bt('t07', sha), ecosystem: 'npm', artifact: { url: pathToFileURL(art).href, sha256: sha } },
+    { ...bt('t08', sha), lane: 'mac', ecosystem: 'npm', artifact: { url: pathToFileURL(art).href, sha256: sha }, lock: npmLock(NAME), install_scripts: true },
+    { ...bt('t09', sha), lane: 'mac' },
     ...extra,
   ] };
   writeFileSync(join(d, 'targets.json'), JSON.stringify(targets));
@@ -283,7 +371,8 @@ test('C1: every target step runs in a hardened container; install has egress, se
     assert.equal(a[a.indexOf('--cap-drop') + 1], 'ALL');
     assert.equal(a[a.indexOf('--security-opt') + 1], 'no-new-privileges');
     const user = a[a.indexOf('--user') + 1];
-    const targetCode = a.includes('isokron.corpus.target=t01') || a.includes('isokron.corpus.target=t04');
+    const helper = /-h\d+$/.test(a[a.indexOf('--name') + 1]);
+    const targetCode = !helper && (a.includes('isokron.corpus.target=t01') || a.includes('isokron.corpus.target=t04'));
     if (targetCode) {
       assert.equal(user, '10001:10001');
       assert.ok(a.includes('--read-only'));
@@ -350,4 +439,58 @@ test('L2: the shard records its order seed (encrypted with the rest); the order 
   assert.equal(s.order_seed, 'cafe');
   assert.deepEqual(s.order, shuffled(['t01', 't02', 't04'], 'cafe'));
   assert.deepEqual(s.targets.map((t) => t.id), s.order);
+});
+
+test('R2-10: helper containers are named and carry their target label, so the per-target sweep finds them', () => {
+  const d = stand();
+  const { r, calls } = drive(d, { only: 't01' });
+  assert.equal(r.status, 0);
+  const helpers = calls.filter((c) => c.argv[0] === 'run' && c.argv.includes('none') && c.argv[c.argv.indexOf('--network') + 1] === 'none' && !c.argv.includes('--cpus')).map((c) => c.argv);
+  assert.ok(helpers.length >= 3, 'CLI volume, volume set-up, file writes, copy-out');
+  for (const a of helpers) assert.match(a[a.indexOf('--name') + 1], /-h\d+$/, a.join(' '));
+  const mine = helpers.filter((a) => a.includes('isokron.corpus.target=t01'));
+  assert.ok(mine.some((a) => a.join(' ').includes('cd /work/out')), 'copy-out');
+  assert.ok(mine.some((a) => a.join(' ').includes('cat > "$1"')), 'file write');
+  assert.ok(mine.some((a) => a.join(' ').includes('chown -R')), 'volume set-up');
+  // Target containers are limited to 2 CPUs (or what the Docker server has).
+  for (const c of calls.filter((x) => x.argv[0] === 'run' && x.argv.includes('--user') && x.argv.includes('10001:10001') && !/-h\d+$/.test(x.argv[x.argv.indexOf('--name') + 1]))) {
+    assert.equal(c.argv[c.argv.indexOf('--cpus') + 1], '2');
+  }
+});
+
+test('R2-3: lane mac refuses a target with install scripts (harness error); others run', () => {
+  const d = stand();
+  const { r, meta, calls } = drive(d, { only: 't08,t09', extraArgs: ['--lane', 'mac'] });
+  assert.equal(r.status, 1);
+  assert.match(meta('t08').harness_error, /lane mac/);
+  assert.equal(meta('t09').status, 'completed');
+  assert.ok(!calls.some((c) => c.argv.includes('isokron.corpus.target=t08')), 'nothing of t08 was started');
+});
+
+test('R2-4: a Docker Engine older than 26.0.0 stops the shard before any target', () => {
+  const d = stand();
+  writeFileSync(join(d, 'fake', 'server-version'), '25.0.5\n');
+  const { r, calls } = drive(d, { only: 't01' });
+  assert.equal(r.stdout, `${LABEL}\nrun finished, exit 125\n`);
+  assert.match(readFileSync(join(d, 'out', '_shard', 'harness-error.txt'), 'utf8'), /older than 26\.0\.0/);
+  assert.ok(!calls.some((c) => c.argv[0] === 'run'));
+});
+
+test('R2-1: output past the caps is dropped, an oversized results.json is recorded by size only, meta.json is written', () => {
+  const d = stand();
+  writeFileSync(join(d, 'fake', 'deps-bytes'), '5000');
+  const { r, meta } = drive(d, { only: 't01,t04', env: { CORPUS_LOG_CAP: '40', CORPUS_BUF_CAP: '1000', CORPUS_JSON_CAP: '10' } });
+  assert.equal(r.status, 0, r.stdout);
+  for (const id of ['t01', 't04']) {
+    const m = meta(id);
+    assert.equal(m.status, 'completed');
+    assert.equal(m.results[0].status, 'too large to read');
+    assert.match(m.results[0].sha256, /^[0-9a-f]{64}$/);
+  }
+  const log = readFileSync(join(d, 'out', 't01', 'logs', 'catalog.log'), 'utf8');
+  assert.match(log, /bytes of output dropped \(log cap\)/);
+  assert.ok(!log.includes(`${NAME} on stderr`), 'stderr past the cap is not in the log');
+  // Captured stdout (the deps step) is cut at the cap; the log keeps a prefix of the cap's size.
+  assert.equal(readFileSync(join(d, 'out', 't04', 'deps.json')).length, 1000);
+  assert.match(readFileSync(join(d, 'out', 't04', 'logs', 'deps.log'), 'utf8'), /\n(d{40})\n# 4961 bytes of output dropped \(log cap\)/);
 });

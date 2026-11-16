@@ -30,7 +30,9 @@ const stdin = () => new Promise((r) => {
 });
 
 const [cmd, ...rest] = argv;
-if (cmd === 'version') done(0, rest.join(' ').includes('Server.Os') ? 'linux/amd64\n' : '29.0.0-fake\n');
+const serverVersion = join(root, 'server-version');
+if (cmd === 'version') done(0, rest.join(' ').includes('Server.Os') ? 'linux/amd64\n' : existsSync(serverVersion) ? readFileSync(serverVersion, 'utf8') : '29.0.0-fake\n');
+if (cmd === 'info') done(0, '4\n');
 if (cmd === 'pull') done(0);
 if (cmd === 'image') done(0, 'sha256:fake\n');
 if (cmd === 'volume') done(0, rest[0] === 'create' ? `${rest.at(-1)}\n` : '');
@@ -81,5 +83,8 @@ if (script.includes('cd /work/out')) {
     done(Number(readFileSync(join(root, 'cli-exit'), 'utf8')));
   }
   done(4);
-} else if (c[0] === 'npm' && c[1] === 'ls') done(0, '{"fake":true}\n');
+} else if (c[0] === 'npm' && c[1] === 'ls') {
+  const n = existsSync(join(root, 'deps-bytes')) ? Number(readFileSync(join(root, 'deps-bytes'), 'utf8')) : 0;
+  done(0, n ? `${'d'.repeat(n)}\n` : '{"fake":true}\n');
+}
 else done(0, `${NAME} install output\n`);

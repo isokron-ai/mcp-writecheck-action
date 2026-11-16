@@ -67,11 +67,19 @@ export const CLI_MAIN = `${P.cli}/dist/src/cli/main.js`;
 export const BACKEND_CAPS = new Set(['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETUID', 'SETGID', 'KILL', 'NET_BIND_SERVICE']);
 /** Size cap for what one target's outputs may bring back to the host (bytes of tar). */
 const COPY_OUT_CAP = Number(process.env.CORPUS_COPY_OUT_CAP || 1024 * 1024 * 1024);
+/** Time limit of the copy-out helper. */
+const COPY_OUT_MS = 600_000;
 /** Per command: log bytes kept on the host, and stdout bytes kept in memory. Output past either is dropped. */
 const LOG_CAP = Number(process.env.CORPUS_LOG_CAP || 64 * 1024 * 1024);
 const BUF_CAP = Number(process.env.CORPUS_BUF_CAP || 16 * 1024 * 1024);
 /** results.json larger than this is recorded by size only, never read into memory. */
-const JSON_CAP = 64 * 1024 * 1024;
+const JSON_CAP = Number(process.env.CORPUS_JSON_CAP || 64 * 1024 * 1024);
+/** CPUs per sandbox or backend container (lowered to what the Docker server has). */
+export const CPUS = 2;
+/** Oldest Docker Engine accepted: before 26.0.0, --internal networks still resolved outside names (CVE-2024-29018). */
+export const DOCKER_MIN = [26, 0, 0];
+/** The only registry a hash-locked npm dependency may come from. */
+export const NPM_REGISTRY = 'https://registry.npmjs.org/';
 
 /** The public exit of one target (see the header). Pure; unit-tested. */
 export function publicExit(t) {
@@ -183,7 +191,7 @@ export function sandboxEnv(binDir, extra = {}) {
  * `docker run` arguments for a container that runs target-controlled code. The flags are fixed here
  * and unit-tested; only volumes (never a bind mount), the network, the env and the command vary.
  */
-export function sandboxRunArgs({ name, image, network, mounts, env = {}, labels = {}, workdir = P.work, stdin = false, cmd }) {
+export function sandboxRunArgs({ name, image, network, mounts, env = {}, labels = {}, workdir = P.work, stdin = false, cpus = CPUS, cmd }) {
   checkPinned(image, 'sandbox');
   const a = [
     'run', '--rm', '--name', name,
@@ -195,6 +203,7 @@ export function sandboxRunArgs({ name, image, network, mounts, env = {}, labels 
     '--tmpfs', '/tmp:rw,nosuid,nodev,exec,size=1g',
     '--pids-limit', '1024',
     '--memory', '4g', '--memory-swap', '4g',
+    '--cpus', String(cpus),
     '--init',
     '--hostname', 'corpus',
     '--network', network,
@@ -215,7 +224,7 @@ export function volumeMount({ src, dst, ro = false }) {
 }
 
 /** `docker run -d` arguments for one backend: digest-pinned, on the target's internal network only. */
-export function backendRunArgs({ name, image, network, alias, env = {}, args = [], capAdd = [], labels = {} }) {
+export function backendRunArgs({ name, image, network, alias, env = {}, args = [], capAdd = [], labels = {}, cpus = CPUS }) {
   checkPinned(image, 'backend');
   for (const c of capAdd) if (!BACKEND_CAPS.has(c)) throw new HarnessError(`backend capability ${c} is not allowed`);
   return [
@@ -224,10 +233,84 @@ export function backendRunArgs({ name, image, network, alias, env = {}, args = [
     '--network', network, '--network-alias', alias,
     '--cap-drop', 'ALL', ...capAdd.flatMap((c) => ['--cap-add', c]),
     '--security-opt', 'no-new-privileges',
-    '--pids-limit', '1024', '--memory', '2g',
+    '--pids-limit', '1024', '--memory', '2g', '--cpus', String(cpus),
     ...Object.entries(env).flatMap(([k, v]) => ['--env', `${k}=${v}`]),
     image, ...args,
   ];
+}
+
+/**
+ * R2-5: an npm lock may fetch only from the npm registry, with an integrity hash for every package.
+ * The one exception is the target itself, `file:artifact.tgz` (the artifact whose sha256 the host
+ * checked). Bundled packages come inside their parent's tarball. No link, git, URL or folder entry.
+ */
+export function checkNpmLock(t) {
+  let pj;
+  let pl;
+  try {
+    pj = JSON.parse(t.lock.package_json);
+    pl = JSON.parse(t.lock.package_lock);
+  } catch {
+    throw new HarnessError('npm lock is not JSON');
+  }
+  const own = { [t.package]: 'file:artifact.tgz' };
+  const same = (a) => a && typeof a === 'object' && JSON.stringify(a) === JSON.stringify(own);
+  if (!same(pj?.dependencies) || Object.keys(pj).some((k) => !['private', 'name', 'version', 'dependencies'].includes(k))) {
+    throw new HarnessError('npm lock: package.json must depend on the target artifact only');
+  }
+  const pk = pl?.packages;
+  if (!(pl?.lockfileVersion >= 2) || !pk || typeof pk !== 'object' || Array.isArray(pk)) throw new HarnessError('npm lock: lockfileVersion 2 or 3 with packages');
+  if (!same(pk['']?.dependencies)) throw new HarnessError('npm lock: the root must depend on the target artifact only');
+  for (const [k, e] of Object.entries(pk)) {
+    if (k === '') continue;
+    if (!e || typeof e !== 'object' || e.link) throw new HarnessError('npm lock: a link entry');
+    if (k === `node_modules/${t.package}`) {
+      if (e.resolved !== 'file:artifact.tgz') throw new HarnessError('npm lock: the target must resolve to the checked artifact');
+      continue;
+    }
+    if (e.inBundle === true && e.resolved === undefined) continue;
+    if (typeof e.resolved !== 'string' || !e.resolved.startsWith(NPM_REGISTRY)) throw new HarnessError(`npm lock: a package resolves outside ${NPM_REGISTRY}`);
+    if (typeof e.integrity !== 'string' || !/^sha(1|256|384|512)-[A-Za-z0-9+/=]+$/.test(e.integrity)) throw new HarnessError('npm lock: a package has no integrity hash');
+  }
+}
+
+/**
+ * R2-5: a PyPI lock is `name[extras]==version [; marker]` with one or more sha256 hashes per
+ * requirement, and nothing else: no direct URL (`name @ ...`), no option line (index, find-links,
+ * editable), no file or VCS reference. Comments and blank lines are ignored.
+ */
+export function checkPypiLock(text) {
+  const reqs = text.replace(/\\\r?\n/g, ' ').split(/\r?\n/).map((l) => l.replace(/(^|\s)#.*$/, '').trim()).filter(Boolean);
+  for (const r of reqs) {
+    const hashes = r.match(/(^|\s)--hash=sha256:[0-9a-f]{64}(?=\s|$)/g) ?? [];
+    const rest = r.replace(/(^|\s)--hash=sha256:[0-9a-f]{64}(?=\s|$)/g, ' ').trim();
+    const [spec, ...marker] = rest.split(';');
+    const ok = hashes.length > 0
+      && /^[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9._,-]*\])?==[A-Za-z0-9.+!_-]+$/.test(spec.trim())
+      && marker.length <= 1 && !/[@\\]|:\/\/|(^|\s)-/.test(marker.join(';'));
+    if (!ok) throw new HarnessError('pypi lock: only name==version requirements with sha256 hashes');
+  }
+}
+
+/**
+ * R2-3: on a Mac (Docker Desktop or colima), the install network reaches the Mac's own loopback
+ * and LAN, and no guard can run inside the runtime's VM. So no target code may run there while it
+ * has egress: targets that need install scripts or a build run on the CI lane's runners only. This
+ * holds for lane `mac`, and for any lane when the driver itself runs on macOS.
+ */
+export function checkLane(t, lane, hostOs = platform()) {
+  if ((lane === 'mac' || hostOs === 'darwin') && (t.install_scripts || t.allow_build)) {
+    throw new HarnessError('lane mac: install_scripts and allow_build targets run on the CI runners only (their code would run with egress)');
+  }
+}
+
+/** R2-4: the Docker Engine must be 26.0.0 or later (CVE-2024-29018). `v` is the server version. */
+export function checkDockerVersion(v) {
+  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(String(v).trim());
+  const n = m ? m.slice(1).map(Number) : null;
+  const older = !n || n[0] < DOCKER_MIN[0] || (n[0] === DOCKER_MIN[0] && (n[1] < DOCKER_MIN[1] || (n[1] === DOCKER_MIN[1] && n[2] < DOCKER_MIN[2])));
+  if (older) throw new HarnessError(`Docker Engine ${String(v).trim() || 'unknown'} is older than ${DOCKER_MIN.join('.')}`);
+  return true;
 }
 
 /**
@@ -241,6 +324,7 @@ export function installPlan(t, plat) {
   const steps = [];
   if (t.ecosystem === 'npm') {
     if (!t.lock?.package_json || !t.lock?.package_lock) throw new HarnessError('npm target is not hash-locked (lock.package_json, lock.package_lock)');
+    checkNpmLock(t);
     files.push({ path: `${P.work}/pkg/artifact.tgz`, artifact: true });
     files.push({ path: `${P.work}/pkg/package.json`, text: t.lock.package_json });
     files.push({ path: `${P.work}/pkg/package-lock.json`, text: t.lock.package_lock });
@@ -251,6 +335,7 @@ export function installPlan(t, plat) {
   if (t.ecosystem === 'pypi') {
     const lock = t.lock?.pypi?.[plat];
     if (typeof lock !== 'string') throw new HarnessError(`pypi target is not hash-locked for ${plat} (lock.pypi.${plat})`);
+    checkPypiLock(lock);
     const file = t.artifact?.file;
     if (!/^[A-Za-z0-9._+-]+\.(whl|tar\.gz|zip)$/.test(file ?? '')) throw new HarnessError('pypi artifact file name');
     const py = `${P.work}/venv/bin/python`;
@@ -340,8 +425,11 @@ function run(cmd, argv, { cwd, env, log, deadline, keepStdout = false, input = n
     let logged = 0;
     let buffered = 0;
     let dropped = 0;
+    // Up to the cap and then nothing: a cut chunk keeps its head, so the log stays one prefix.
     const toLog = (c) => {
-      if (logged + c.length <= LOG_CAP) { logged += c.length; out.write(c); } else dropped += c.length;
+      const keep = Math.max(0, Math.min(c.length, LOG_CAP - logged));
+      if (keep) { logged += keep; out.write(keep === c.length ? c : c.subarray(0, keep)); }
+      dropped += c.length - keep;
     };
     let child;
     try {
@@ -356,7 +444,12 @@ function run(cmd, argv, { cwd, env, log, deadline, keepStdout = false, input = n
     }
     child.stdout.on('data', (c) => {
       // 'buffer' is ours only (docker cp of a pinned image's file); text captures of target steps are capped.
-      if (keepStdout === 'buffer' || (keepStdout && buffered + c.length <= BUF_CAP)) { buffered += c.length; chunks.push(c); }
+      if (keepStdout === 'buffer') chunks.push(c);
+      else if (keepStdout && buffered < BUF_CAP) {
+        const keep = Math.min(c.length, BUF_CAP - buffered);
+        buffered += keep;
+        chunks.push(keep === c.length ? c : c.subarray(0, keep));
+      }
       if (keepStdout !== 'buffer') toLog(c);
     });
     child.stderr.on('data', (c) => toLog(c));
@@ -375,7 +468,7 @@ function run(cmd, argv, { cwd, env, log, deadline, keepStdout = false, input = n
       // Anything the step left behind in its process group dies with it: an orphan would outlive
       // the job and the runner prints its process name in the public log.
       try { process.kill(-child.pid, 'SIGKILL'); } catch {}
-      out.end(`${dropped ? `# ${dropped} bytes of output dropped (log cap)\n` : ''}# exit ${code} signal ${signal}${timedOut ? ' (time limit)' : ''} after ${Date.now() - t0} ms\n`);
+      out.end(`${dropped ? `\n# ${dropped} bytes of output dropped (log cap)\n` : ''}# exit ${code} signal ${signal}${timedOut ? ' (time limit)' : ''} after ${Date.now() - t0} ms\n`);
       const buf = Buffer.concat(chunks);
       done({ exit: code, signal, timed_out: timedOut, spawn_error: spawnError, ms: Date.now() - t0, stdout: keepStdout === 'buffer' ? buf : buf.toString('utf8') });
     });
@@ -420,25 +513,43 @@ class Docker {
   }
 
   d(argv, opts = {}) {
-    return run('docker', argv, { cwd: this.ctx.out, env: this.env, log: opts.log ?? this.log, deadline: opts.deadline ?? Date.now() + 300_000, keepStdout: opts.keepStdout ?? false, input: opts.input ?? null });
+    return run('docker', argv, { cwd: this.ctx.out, env: this.env, log: opts.log ?? this.log, deadline: opts.deadline ?? Date.now() + 300_000, keepStdout: opts.keepStdout ?? false, input: opts.input ?? null, onTimeout: opts.onTimeout ?? null });
+  }
+
+  /** Remove a container now, without waiting (at a time limit: killing the client leaves it running). */
+  kill(name) {
+    spawn('docker', ['rm', '-f', name], { env: this.env, stdio: 'ignore' }).on('error', () => {});
+  }
+
+  /**
+   * One of our helper containers, named and labelled with its target (R2-10), so a helper stuck
+   * on something the target planted (a fifo at a path we write) is removed at the deadline and
+   * found by the per-target sweep.
+   */
+  async helper(h, opts) {
+    const name = `corpus-${this.ctx.runId}-${h.target ?? 'shard'}-h${++this.n}`;
+    const r = await this.d(this.helperArgs({ ...h, name }), { ...opts, onTimeout: () => this.kill(name) });
+    if (r.timed_out) await this.d(['rm', '-f', name], { log: opts.log });
+    return r;
   }
 
   /** A sandbox container running `cmd`; removed (with its processes) at the deadline. */
   async sandbox({ log, deadline, network, mounts, env, cmd, workdir, input = null, keepStdout = false, target }) {
     const name = `corpus-${this.ctx.runId}-${target}-${++this.n}`;
-    const argv = sandboxRunArgs({ name, image: this.ctx.images.runtime, network, mounts, env, workdir, stdin: input !== null, labels: this.labels({ 'isokron.corpus.target': target }), cmd });
+    const argv = sandboxRunArgs({ name, image: this.ctx.images.runtime, network, mounts, env, workdir, stdin: input !== null, labels: this.labels({ 'isokron.corpus.target': target }), cpus: this.ctx.cpus, cmd });
     const r = await run('docker', argv, {
       cwd: this.ctx.out, env: this.env, log, deadline, keepStdout, input,
-      onTimeout: () => { spawn('docker', ['rm', '-f', name], { env: this.env, stdio: 'ignore' }).on('error', () => {}); },
+      onTimeout: () => this.kill(name),
     });
     if (r.timed_out) await this.d(['rm', '-f', name], { log });
     return { ...r, container: true };
   }
 
   /** Ours, not target code: root without capabilities except CHOWN, no network, fixed command. */
-  helperArgs({ mounts, cmd, stdin = false, chown = false, user = '0:0' }) {
+  helperArgs({ mounts, cmd, stdin = false, chown = false, user = '0:0', name = null, target = null }) {
     return [
-      'run', '--rm', ...Object.entries(this.labels()).flatMap(([k, v]) => ['--label', `${k}=${v}`]),
+      'run', '--rm', ...(name ? ['--name', name] : []),
+      ...Object.entries(this.labels(target ? { 'isokron.corpus.target': target } : {})).flatMap(([k, v]) => ['--label', `${k}=${v}`]),
       '--user', user, '--cap-drop', 'ALL', ...(chown ? ['--cap-add', 'CHOWN'] : []),
       '--security-opt', 'no-new-privileges', '--read-only', '--network', 'none',
       ...mounts.flatMap((m) => ['--mount', volumeMount(m)]),
@@ -509,9 +620,11 @@ export function keepRegular(dir) {
  * Bring /work/out back to the host: a helper (no network, read-only volume) tars regular files and
  * folders only; the host extracts with no owner and no modes, under COPY_OUT_CAP bytes.
  */
-function copyOut(dk, vol, dest, log) {
+function copyOut(dk, vol, dest, log, target) {
   mkdirSync(dest, { recursive: true });
+  const name = `corpus-${dk.ctx.runId}-${target}-h${++dk.n}`;
   const argv = dk.helperArgs({
+    name, target,
     user: SANDBOX_USER,
     mounts: [{ src: vol, dst: P.work, ro: true }],
     cmd: ['sh', '-c', 'cd /work/out 2>/dev/null || exit 0; find . -mindepth 1 \\( -type f -o -type d \\) -print0 | tar --null --no-recursion -cf - -T -'],
@@ -523,6 +636,9 @@ function copyOut(dk, vol, dest, log) {
     const tar = spawn('tar', ['-x', '-f', '-', '--no-same-owner', '--no-same-permissions', '-C', dest], { stdio: ['pipe', 'ignore', 'pipe'] });
     let bytes = 0;
     let capped = false;
+    let timedOut = false;
+    // The helper reads only regular files and folders, but a stuck one is removed (R2-10).
+    const timer = setTimeout(() => { timedOut = true; dk.kill(name); src.kill('SIGKILL'); tar.stdin.destroy(); }, COPY_OUT_MS);
     src.stderr.on('data', (c) => lg.write(c));
     tar.stderr.on('data', (c) => lg.write(c));
     tar.stdin.on('error', () => {});
@@ -540,9 +656,10 @@ function copyOut(dk, vol, dest, log) {
     let tarExit = null;
     const fin = () => {
       if (++n < 2) return;
+      clearTimeout(timer);
       const removed = keepRegular(dest);
-      lg.end(`# copy-out ${bytes} bytes, helper exit ${srcExit}, tar exit ${tarExit}${capped ? ', over the cap' : ''}, ${removed} non-regular removed\n`);
-      done({ bytes, capped, ok: srcExit === 0 && tarExit === 0 && !capped, removed });
+      lg.end(`# copy-out ${bytes} bytes, helper exit ${srcExit}, tar exit ${tarExit}${capped ? ', over the cap' : ''}${timedOut ? ', time limit' : ''}, ${removed} non-regular removed\n`);
+      done({ bytes, capped, timed_out: timedOut, ok: srcExit === 0 && tarExit === 0 && !capped && !timedOut, removed });
     };
     src.on('error', () => { srcExit = -1; fin(); });
     src.on('close', (c) => { srcExit = c; fin(); });
@@ -593,6 +710,7 @@ async function runTarget(t, o, ctx, dk) {
   let vol = null;
   try {
     checkId(t.id);
+    checkLane(t, o.lane);
     // 1. The artifact, on the host: downloaded and checked against the pinned sha256. Never run here.
     const plan = installPlan(t, ctx.plat);
     const art = artifactFor(t, ctx.plat);
@@ -602,12 +720,12 @@ async function runTarget(t, o, ctx, dk) {
 
     // 2. The target's volume and networks: egress for install only, internal for the rest.
     vol = await dk.volume(`corpus-${tag}`, L('install'));
-    await must(dk.d(dk.helperArgs({ chown: true, mounts: [{ src: vol, dst: P.work }], cmd: ['sh', '-c', 'mkdir -p /work/home /work/out /work/dl /work/pkg && chmod 700 /work && chown -R 10001:10001 /work'] }), { log: L('install') }), 'volume set-up');
+    await must(dk.helper({ target: t.id, chown: true, mounts: [{ src: vol, dst: P.work }], cmd: ['sh', '-c', 'mkdir -p /work/home /work/out /work/dl /work/pkg && chmod 700 /work && chown -R 10001:10001 /work'] }, { log: L('install'), deadline }), 'volume set-up');
     const egress = await dk.network(`corpus-${tag}-egress`, false, L('install'));
     const internal = await dk.network(`corpus-${tag}-run`, true, L('install'));
     meta.networks = { install: { internal: egress.internal }, run: { internal: internal.internal } };
     const mounts = [{ src: vol, dst: P.work }, { src: ctx.cliVol, dst: P.cli, ro: true }, ...(ctx.toolsVol ? [{ src: ctx.toolsVol, dst: P.tools, ro: true }] : [])];
-    const put = (path, buf, log) => must(dk.d(dk.helperArgs({ user: SANDBOX_USER, mounts: [{ src: vol, dst: P.work }], stdin: true, cmd: ['sh', '-c', 'mkdir -p "$(dirname "$1")" && cat > "$1"', 'sh', path] }), { log, input: buf }), `write ${path.split('/').pop()}`);
+    const put = (path, buf, log) => must(dk.helper({ target: t.id, user: SANDBOX_USER, mounts: [{ src: vol, dst: P.work }], stdin: true, cmd: ['sh', '-c', 'mkdir -p "$(dirname "$1")" && cat > "$1"', 'sh', path] }, { log, input: buf, deadline }), `write ${path.split('/').pop()}`);
 
     // 3. Install, in sandbox containers. Only the `egress` steps have a network that leaves the host.
     for (const f of plan.files) await put(f.path, f.artifact ? dl.buf : Buffer.from(f.text), L('install'));
@@ -638,7 +756,7 @@ async function runTarget(t, o, ctx, dk) {
       vars[`host${i}`] = `b${i}`;
       vars[`port${i}`] = String(b.port);
       if (i === 0) vars.host = 'b0';
-      const argv = backendRunArgs({ name, image, network: internal.name, alias: `b${i}`, env: fill(b.env ?? {}, vars), args: fill(b.args ?? [], vars), capAdd: b.cap_add ?? [], labels: dk.labels({ 'isokron.corpus.target': t.id }) });
+      const argv = backendRunArgs({ name, image, network: internal.name, alias: `b${i}`, env: fill(b.env ?? {}, vars), args: fill(b.args ?? [], vars), capAdd: b.cap_add ?? [], labels: dk.labels({ 'isokron.corpus.target': t.id }), cpus: ctx.cpus });
       await must(dk.d(argv, { log: L(`backend-${i}`), deadline }), `backend ${i} start`);
       meta.backends.push({ image, image_id: imageId, container_port: b.port, cap_add: b.cap_add ?? [] });
       const waitUntil = Math.min(deadline, Date.now() + (b.wait_timeout_s ?? 120) * 1000);
@@ -743,11 +861,11 @@ async function runTarget(t, o, ctx, dk) {
     if (vol) {
       // The CLI's results folders, the ledger of a full run, the init draft: target-writable data,
       // kept under sandbox/ so that it can never replace meta.json or a log of ours.
-      const c = await copyOut(dk, vol, join(odir, 'sandbox'), lg);
-      meta.copy_out = { bytes: c.bytes, over_cap: c.capped, non_regular_removed: c.removed };
+      const c = await copyOut(dk, vol, join(odir, 'sandbox'), lg, t.id);
+      meta.copy_out = { bytes: c.bytes, over_cap: c.capped, timed_out: c.timed_out, non_regular_removed: c.removed };
       if (!c.ok && meta.status === 'completed') {
         meta.status = 'harness_error';
-        meta.harness_error = c.capped ? 'copy-out: over the size cap' : 'copy-out failed';
+        meta.harness_error = c.capped ? 'copy-out: over the size cap' : c.timed_out ? 'copy-out: time limit' : 'copy-out failed';
       }
       await dk.d(['volume', 'rm', '-f', vol], { log: lg });
     }
@@ -819,7 +937,7 @@ async function context(o) {
       ? { repository: process.env.GITHUB_REPOSITORY, run_id: process.env.GITHUB_RUN_ID, run_attempt: process.env.GITHUB_RUN_ATTEMPT, sha: process.env.GITHUB_SHA, workflow: process.env.GITHUB_WORKFLOW, event: process.env.GITHUB_EVENT_NAME }
       : null,
     runId: ((process.env.GITHUB_RUN_ID ?? `l${Date.now().toString(36)}`) + `s${o.shard}`).toLowerCase().replace(/[^a-z0-9]/g, ''),
-    isolation: { kind: 'container', user: SANDBOX_USER, cap_drop: 'ALL', no_new_privileges: true, read_only_root: true, mounts: 'named volumes only', install_network: 'bridge (egress)', run_network: 'internal' },
+    isolation: { kind: 'container', user: SANDBOX_USER, cap_drop: 'ALL', no_new_privileges: true, read_only_root: true, mounts: 'named volumes only', install_network: 'bridge (egress)', run_network: 'internal', cpus: null },
   };
 }
 
@@ -830,13 +948,17 @@ async function prepareDocker(ctx, dk) {
   if (v.exit !== 0) throw new HarnessError('docker is not available');
   ctx.plat = platformKey(v.stdout);
   ctx.runner.container_platform = ctx.plat;
+  checkDockerVersion(ctx.runner.docker);
+  const ncpu = Number((await dk.d(['info', '--format', '{{.NCPU}}'], { log, keepStdout: true })).stdout.trim());
+  ctx.cpus = Number.isInteger(ncpu) && ncpu >= 1 ? Math.min(CPUS, ncpu) : 1;
+  ctx.isolation.cpus = ctx.cpus;
   ctx.imageInfo = {};
   // uv is fetched only when a PyPI target needs it (ensureTools).
   ctx.imageInfo.runtime = { ref: ctx.images.runtime, id: await dk.image(ctx.images.runtime, log, 'runtime image') };
   // The CLI, read-only in every target container. Copied through stdin: no host path is mounted.
   ctx.cliVol = await dk.volume(`corpus-${ctx.runId}-cli`, log);
   const tarBuf = await cliTar(ctx.cliDir);
-  await must(dk.d(dk.helperArgs({ mounts: [{ src: ctx.cliVol, dst: P.cli }], stdin: true, cmd: ['tar', '-x', '-f', '-', '--no-same-owner', '-C', P.cli] }), { log, input: tarBuf }), 'CLI volume');
+  await must(dk.helper({ mounts: [{ src: ctx.cliVol, dst: P.cli }], stdin: true, cmd: ['tar', '-x', '-f', '-', '--no-same-owner', '-C', P.cli] }, { log, input: tarBuf }), 'CLI volume');
   ctx.toolsVol = null;
   let toolsReady = null;
   ctx.ensureTools = () => {
@@ -848,7 +970,7 @@ async function prepareDocker(ctx, dk) {
       await must(dk.d(['create', '--name', c, ...Object.entries(dk.labels()).flatMap(([k, val]) => ['--label', `${k}=${val}`]), ref], { log }), 'uv create');
       const t = await must(dk.d(['cp', `${c}:/uv`, '-'], { log, keepStdout: 'buffer' }), 'uv copy');
       await dk.d(['rm', '-f', c], { log });
-      await must(dk.d(dk.helperArgs({ mounts: [{ src: vol, dst: P.tools }], stdin: true, cmd: ['tar', '-x', '-f', '-', '--no-same-owner', '-C', P.tools] }), { log, input: t.stdout }), 'tools volume');
+      await must(dk.helper({ mounts: [{ src: vol, dst: P.tools }], stdin: true, cmd: ['tar', '-x', '-f', '-', '--no-same-owner', '-C', P.tools] }, { log, input: t.stdout }), 'tools volume');
       ctx.toolsVol = vol;
     })();
     return toolsReady;

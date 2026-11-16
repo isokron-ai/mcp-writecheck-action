@@ -140,6 +140,8 @@ test('C1 smoke: a hostile target stays inside its container', { skip, timeout: 6
   const walk = (p) => readdirSync(p).flatMap((e) => (lstatSync(join(p, e)).isDirectory() ? walk(join(p, e)) : [join(p, e)]));
   for (const f of walk(join(out, 't01'))) assert.ok(lstatSync(f).isFile(), f);
   assert.ok(existsSync(join(sb, 'CLAUDE.md')), 'target files stay data in sandbox/ (the Mac strips agent files)');
+  // R2-2: the target's own `node` bin never ran our CLI (its bin folder is last on PATH).
+  assert.ok(!existsSync(join(sb, 'node-shadowed.txt')), 'the CLI ran under the target\'s node');
   assert.equal(meta.results.length, 1);
 
   // Nothing left: no container, volume or network of the run, and no orphan process on the host.
@@ -199,6 +201,51 @@ test('C1 smoke: at the time limit the container and everything in it are removed
   const r = spawnSync(process.execPath, [join(root, 'corpus', 'run-shard.mjs'), '--targets', join(d, 'targets.json'), '--cli', standInCli(d), '--cli-commit', 'f'.repeat(40), '--out', join(d, 'out')], { encoding: 'utf8' });
   assert.equal(r.stdout, `${LABEL}\nrun finished, exit 124\n`);
   assert.ok(Date.now() - t0 < 120_000);
+  for (const kind of [['ps', '-aq'], ['volume', 'ls', '-q'], ['network', 'ls', '-q']]) {
+    assert.equal(spawnSync('docker', [...kind, '--filter', 'label=isokron.corpus.run'], { encoding: 'utf8' }).stdout.trim(), '', kind.join(' '));
+  }
+});
+
+// R2-1 and R2-10 against the real daemon: a target that floods its output and leaves an oversized
+// results.json is recorded (capped log, results.json by sha256 and size) and the next target in the
+// shard still runs; a fifo planted where we write a file holds our helper only until the time limit.
+// Harness behaviour only, so always with the stand-in CLI (the servers here are empty scripts).
+function binTarget(d, id, extra) {
+  const art = join(d, `${id}.tgz`);
+  mkdirSync(join(d, id));
+  writeFileSync(join(d, id, 'srv'), '#!/bin/sh\n');
+  spawnSync('tar', ['-czf', art, '-C', join(d, id), 'srv']);
+  const a = { url: pathToFileURL(art).href, file: `${id}.tgz`, sha256: createHash('sha256').update(readFileSync(art)).digest('hex') };
+  return { id, lane: 'ci', ecosystem: 'binary', package: 'x', version: '1', init: false, artifact: { 'linux-x64': a, 'linux-arm64': a }, server: { command: ['{{bin}}/srv'] }, ...extra };
+}
+
+test('R2-1 / R2-10 smoke: output floods and a planted fifo cost only that target; the shard goes on', { skip, timeout: 300_000 }, () => {
+  const d = mkdtempSync(join(tmpdir(), 'corpus-smoke-caps-'));
+  const flood = 'head -c 3000000 /dev/zero | tr "\\0" x; head -c 3000000 /dev/zero | tr "\\0" y >&2; '
+    + 'mkdir -p {{tdir}}/out/results/big && head -c 2000000 /dev/zero > {{tdir}}/out/results/big/results.json';
+  const targets = [
+    binTarget(d, 'c01', { setup: [flood] }),
+    binTarget(d, 'c02', { timeout_s: 25, setup: ['mkfifo {{tdir}}/writecheck.yaml'] }),
+    binTarget(d, 'c03', {}),
+  ];
+  writeFileSync(join(d, 'targets.json'), JSON.stringify({ format: 'isokron-corpus-targets/2', targets }));
+  const out = join(d, 'out');
+  const t0 = Date.now();
+  const r = spawnSync(process.execPath, [join(root, 'corpus', 'run-shard.mjs'), '--targets', join(d, 'targets.json'), '--cli', standInCli(d), '--cli-commit', 'f'.repeat(40), '--out', out], {
+    encoding: 'utf8', env: { ...process.env, CORPUS_ORDER_SEED: '00', CORPUS_LOG_CAP: String(1 << 20), CORPUS_JSON_CAP: String(1 << 20) },
+  });
+  assert.ok(Date.now() - t0 < 240_000);
+  assert.equal(r.stdout.split('\n')[0], LABEL);
+  assert.deepEqual(r.stdout.split('\n').slice(1).filter(Boolean).sort(), ['run finished, exit 0', 'run finished, exit 0', 'run finished, exit 124']);
+  const m = (id) => JSON.parse(readFileSync(join(out, id, 'meta.json'), 'utf8'));
+  assert.equal(m('c01').status, 'completed', m('c01').harness_error);
+  const big = m('c01').results.find((x) => x.folder === 'sandbox/results/big');
+  assert.equal(big.status, 'too large to read');
+  const setupLog = join(out, 'c01', 'logs', 'setup.log');
+  assert.ok(lstatSync(setupLog).size < (1 << 20) + 16_384, `setup.log is ${lstatSync(setupLog).size} bytes`);
+  assert.match(readFileSync(setupLog, 'utf8'), /# \d+ bytes of output dropped \(log cap\)/);
+  assert.equal(m('c02').status, 'timeout');
+  assert.equal(m('c03').status, 'completed', m('c03').harness_error);
   for (const kind of [['ps', '-aq'], ['volume', 'ls', '-q'], ['network', 'ls', '-q']]) {
     assert.equal(spawnSync('docker', [...kind, '--filter', 'label=isokron.corpus.run'], { encoding: 'utf8' }).stdout.trim(), '', kind.join(' '));
   }
