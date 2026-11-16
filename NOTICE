@@ -17,3 +17,7 @@ Joshua Bryan, IsoKron, licensed under CC BY 4.0
 (https://creativecommons.org/licenses/by/4.0/). Each skill carries the attribution
 line the specification asks for. The skills add no requirement; the specification
 is the reference.
+
+The MCP Write-Safety Requirements mark in assets/ is licensed under CC BY 4.0. It may
+be used to say which version of the requirements a server was tested against; it may
+not be used in a way that implies approval or certification.

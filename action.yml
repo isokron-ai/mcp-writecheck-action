@@ -3,6 +3,9 @@ description: >-
   Runs mcp-writecheck against an MCP server in CI and reports each MCP Write-Safety Requirement
   (MWS 0.9) per write path. Mode full makes real writes; point it only at a test environment.
 author: IsoKron
+branding:
+  icon: git-commit
+  color: blue
 
 inputs:
   manifest:

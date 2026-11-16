@@ -1,3 +1,10 @@
+<p>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/mws-mark-dark.svg">
+    <img src="assets/mws-mark.svg" alt="MCP Write-Safety Requirements mark" width="72" height="72">
+  </picture>
+</p>
+
 # mcp-writecheck GitHub Action
 
 Runs [`mcp-writecheck`](https://github.com/isokron-ai/mcp-write-safety/tree/main/packages/writecheck) in the CI of a repository that holds an MCP server, and reports the result against the MCP Write-Safety Requirements (MWS 0.9) in the job summary.
