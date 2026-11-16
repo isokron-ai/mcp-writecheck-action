@@ -1,0 +1,116 @@
+# Corpus: the CLI against pinned third-party open-source MCP servers, every night.
+#
+# What this is for: finding bugs in mcp-writecheck and this action on servers we did not write.
+# It is not a findings channel. Nothing target-specific appears here or in the logs:
+#   - the target list is not in the repository in clear text: corpus/targets.json.age is decrypted at
+#     run time with the CORPUS_TARGETS_KEY secret, inside one step, and deleted at the end of the job;
+#   - job and step names are generic; logs and the job summary print only the label
+#     "automated candidate, unreviewed: not a finding" and one "run finished, exit N" line per target
+#     (N is our tool's or the harness's status, never a verdict: corpus/README.md);
+#   - every install, backend, server and CLI output goes to files that are age-encrypted to IsoKron's
+#     archive key (corpus/recipients.txt) before upload. The private key is not in this repository
+#     or in CI. Nothing is cached;
+#   - a target's verdicts never fail a job. Only a CLI crash or error, a time limit or a harness error
+#     turns a shard red.
+# Backends run inside the job (Docker on the runner, local files); no target touches an external
+# service or account. Standard GitHub-hosted runners only; a few dozen pinned targets at most (the
+# long tail runs elsewhere, with the same script and record format).
+#
+# Security: schedule and manual dispatch only, from main; no pull_request or pull_request_target, so
+# no pull request (fork or branch) ever runs with either secret. MWS_CLI_TOKEN (read-only on the CLI's
+# repository) is used by one checkout step before any third-party code is installed; CORPUS_TARGETS_KEY
+# only by the decrypt step. Third-party actions are pinned by full SHA.
+
+name: corpus
+
+on:
+  schedule:
+    - cron: '17 9 * * *'
+  workflow_dispatch:
+    inputs:
+      cli-ref:
+        description: mcp-writecheck commit to test with (full 40-character SHA). Empty for the action's default.
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: corpus
+  cancel-in-progress: false
+
+env:
+  # age v1.3.2, linux-amd64 release tarball (sha256 recorded 16 Nov 2026).
+  AGE_URL: https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-linux-amd64.tar.gz
+  AGE_SHA256: cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10
+  CORPUS_SHARDS: '4'
+
+jobs:
+  corpus:
+    if: github.repository == 'isokron-ai/mcp-writecheck-action' && github.ref == 'refs/heads/main'
+    name: corpus-shard-${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - id: cliref
+        name: Choose the CLI commit
+        env:
+          INPUT_REF: ${{ inputs.cli-ref }}
+        run: dogfood/cli-ref.sh
+      # The CLI first, before any third-party code runs in this job: the only step with the token.
+      - name: Check out mcp-writecheck
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: isokron-ai/mcp-write-safety
+          ref: ${{ steps.cliref.outputs.ref }}
+          token: ${{ secrets.MWS_CLI_TOKEN }}
+          path: mws-cli
+          sparse-checkout: packages/writecheck
+          persist-credentials: false
+      - name: Build mcp-writecheck
+        run: dogfood/build-cli.sh
+      - name: Install age
+        run: corpus/install-age.sh
+      - name: Decrypt the target list
+        env:
+          CORPUS_TARGETS_KEY: ${{ secrets.CORPUS_TARGETS_KEY }}
+        run: corpus/decrypt-targets.sh
+      - id: run
+        name: Run the shard
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: corpus/run-ci-shard.sh
+      - name: Encrypt the results
+        if: always()
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: corpus/encrypt-results.sh
+      - name: Upload the encrypted results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: corpus-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/corpus-upload/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Job summary
+        if: always()
+        run: corpus/summary.sh
+      - name: Job status
+        if: always()
+        env:
+          RC: ${{ steps.run.outputs.rc }}
+        run: |
+          echo "run finished, exit ${RC:-125}"
+          [ "${RC:-125}" = "0" ]
