@@ -18,7 +18,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   backendRunArgs, catalogManifest, checkPinned, classifyCli, dockerEnvFrom, fill, installPlan, keepRegular, LABEL,
-  platformKey, publicExit, sandboxEnv, sandboxRunArgs, volumeMount,
+  platformKey, publicExit, sandboxEnv, sandboxRunArgs, shuffled, volumeMount,
 } from '../corpus/run-shard.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -156,6 +156,19 @@ test('M4: binary targets unpack with no network', () => {
   const p = installPlan({ ecosystem: 'binary', artifact: { 'linux-x64': { file: 's.tgz' } } }, 'linux-x64');
   assert.ok(p.steps.every((s) => s.net === 'none'));
   assert.throws(() => installPlan({ ecosystem: 'binary', artifact: {} }, 'linux-x64'), /no artifact/);
+});
+
+// ------------------------------------------------------------------------------------------------
+// L2: order
+// ------------------------------------------------------------------------------------------------
+
+test('L2: the per-run order is a seeded shuffle (same seed, same order; another seed, another order)', () => {
+  const l = Array.from({ length: 12 }, (_, i) => `t${i}`);
+  const a = shuffled(l, 'aa');
+  assert.deepEqual([...a].sort(), [...l].sort());
+  assert.deepEqual(shuffled(l, 'aa'), a);
+  assert.notDeepEqual(shuffled(l, 'bb'), a);
+  assert.deepEqual(l, Array.from({ length: 12 }, (_, i) => `t${i}`), 'input untouched');
 });
 
 test('copy-out keeps regular files and folders only', () => {
@@ -327,4 +340,14 @@ test('--consume-targets removes the clear-text list before any target runs', () 
   assert.equal(r.status, 0);
   assert.throws(() => readFileSync(join(d, 'targets.json')));
   assert.match(JSON.parse(readFileSync(join(d, 'out', '_shard', 'shard.json'), 'utf8')).targets_list_sha256, /^[0-9a-f]{64}$/);
+});
+
+test('L2: the shard records its order seed (encrypted with the rest); the order follows it', () => {
+  const d = stand();
+  const { r } = drive(d, { only: 't01,t02,t04', env: { CORPUS_ORDER_SEED: 'cafe' } });
+  assert.equal(r.status, 1);
+  const s = JSON.parse(readFileSync(join(d, 'out', '_shard', 'shard.json'), 'utf8'));
+  assert.equal(s.order_seed, 'cafe');
+  assert.deepEqual(s.order, shuffled(['t01', 't02', 't04'], 'cafe'));
+  assert.deepEqual(s.targets.map((t) => t.id), s.order);
 });

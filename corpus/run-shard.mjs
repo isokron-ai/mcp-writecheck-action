@@ -44,7 +44,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { createWriteStream, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { arch, platform, release } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -266,6 +266,21 @@ export function installPlan(t, plat) {
     return { files, steps, bin: `${P.work}/bin`, pkgdir: null };
   }
   throw new HarnessError(`unknown ecosystem ${t.ecosystem}`);
+}
+
+/**
+ * The order targets run in, shuffled per run (L2): the public "run finished, exit N" lines then
+ * say nothing about which target of the list a line belongs to. The seed is kept in the encrypted
+ * shard.json, so the order can be rebuilt. Deterministic for a seed; unit-tested.
+ */
+export function shuffled(list, seedHex) {
+  const a = [...list];
+  for (let i = a.length - 1; i > 0; i--) {
+    const h = createHash('sha256').update(`${seedHex}:${i}`).digest();
+    const j = h.readUInt32BE(0) % (i + 1);
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
 }
 
 /** The artifact entry for this platform (binary targets have one per platform). */
@@ -828,15 +843,16 @@ async function main() {
     if (o.consumeTargets) rmSync(o.targets, { force: true }); // no clear-text list on disk while targets run
     const list = JSON.parse(raw.toString('utf8'));
     if (list.format !== TARGETS_FORMAT) throw new HarnessError('the target list has another format');
-    const mine = list.targets
+    const seed = process.env.CORPUS_ORDER_SEED || randomBytes(16).toString('hex');
+    const mine = shuffled(list.targets
       .filter((t) => (t.lane ?? 'ci') === o.lane && t.enabled !== false)
       .filter((t) => !o.only || o.only.includes(t.id))
-      .filter((_, i) => i % o.shards === o.shard - 1);
+      .filter((_, i) => i % o.shards === o.shard - 1), seed);
     const ctx = await context(o);
     ctx.defaults = list.defaults ?? {};
     dk = new Docker(ctx, join(o.out, '_shard', 'docker.log'));
     await prepareDocker(ctx, dk);
-    const shard = { format: RUN_FORMAT, label: LABEL, lane: o.lane, shard: o.shard, shards: o.shards, targets_list_sha256: createHash('sha256').update(raw).digest('hex'), targets_list_updated: list.updated ?? null, cli: ctx.cli, spec: ctx.spec, runner: ctx.runner, images: ctx.imageInfo, isolation: ctx.isolation, github: ctx.github, started: now(), targets: [] };
+    const shard = { format: RUN_FORMAT, label: LABEL, lane: o.lane, shard: o.shard, shards: o.shards, targets_list_sha256: createHash('sha256').update(raw).digest('hex'), targets_list_updated: list.updated ?? null, order_seed: seed, order: mine.map((t) => t.id), cli: ctx.cli, spec: ctx.spec, runner: ctx.runner, images: ctx.imageInfo, isolation: ctx.isolation, github: ctx.github, started: now(), targets: [] };
     for (const t of mine) {
       const m = await runTarget(t, o, ctx, dk);
       shard.targets.push({ id: t.id, status: m.status, cli_exit: m.cli_exit, public_exit: m.public_exit, results: m.results.map((r) => r.sha256) });
