@@ -111,7 +111,7 @@ test('C1 / H3: the docker client and the containers get no GitHub file command, 
   assert.ok(!Object.keys(s).some((k) => /^(GITHUB|ACTIONS|RUNNER)_|TOKEN|KEY/.test(k)));
   // L4: every cache lives in the target's own volume, so one target cannot poison the next.
   for (const k of ['npm_config_cache', 'UV_CACHE_DIR', 'PIP_CACHE_DIR', 'XDG_CACHE_HOME']) assert.match(s[k], /^\/work\/home\//, k);
-  assert.match(s.PATH, /^\/work\/venv\/bin:/);
+  assert.match(s.PATH, /^\/opt\/tools:.*:\/work\/venv\/bin$/, 'the target bin folder comes last');
 });
 
 test('C1: platform comes from the Docker server and must be Linux', () => {

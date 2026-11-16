@@ -67,6 +67,11 @@ export const CLI_MAIN = `${P.cli}/dist/src/cli/main.js`;
 export const BACKEND_CAPS = new Set(['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETUID', 'SETGID', 'KILL', 'NET_BIND_SERVICE']);
 /** Size cap for what one target's outputs may bring back to the host (bytes of tar). */
 const COPY_OUT_CAP = Number(process.env.CORPUS_COPY_OUT_CAP || 1024 * 1024 * 1024);
+/** Per command: log bytes kept on the host, and stdout bytes kept in memory. Output past either is dropped. */
+const LOG_CAP = Number(process.env.CORPUS_LOG_CAP || 64 * 1024 * 1024);
+const BUF_CAP = Number(process.env.CORPUS_BUF_CAP || 16 * 1024 * 1024);
+/** results.json larger than this is recorded by size only, never read into memory. */
+const JSON_CAP = 64 * 1024 * 1024;
 
 /** The public exit of one target (see the header). Pure; unit-tested. */
 export function publicExit(t) {
@@ -163,7 +168,9 @@ export function dockerEnvFrom(env) {
 /** The environment inside a target container (install, set-up, CLI, server). Fixed, plus `extra`. */
 export function sandboxEnv(binDir, extra = {}) {
   return {
-    PATH: [binDir, P.tools, '/usr/local/sbin', '/usr/local/bin', '/usr/sbin', '/usr/bin', '/sbin', '/bin'].filter(Boolean).join(':'),
+    // The target's own bin folder comes last: a package that ships a `node`, `npm`, `uv`, `sh` or `tar`
+    // (the npm package `node` does) must not replace the tools that run the CLI and the install.
+    PATH: [P.tools, '/usr/local/sbin', '/usr/local/bin', '/usr/sbin', '/usr/bin', '/sbin', '/bin', binDir].filter(Boolean).join(':'),
     HOME: P.home, TMPDIR: '/tmp', XDG_CACHE_HOME: `${P.home}/.cache`, XDG_CONFIG_HOME: `${P.home}/.config`,
     npm_config_cache: `${P.home}/.npm`, npm_config_update_notifier: 'false', npm_config_fund: 'false', npm_config_audit: 'false',
     UV_CACHE_DIR: `${P.home}/.cache/uv`, UV_PYTHON_INSTALL_DIR: `${P.work}/python`, UV_PYTHON_PREFERENCE: 'only-managed',
@@ -330,6 +337,12 @@ function run(cmd, argv, { cwd, env, log, deadline, keepStdout = false, input = n
     const out = createWriteStream(log, { flags: 'a' });
     out.write(`\n$ ${[cmd, ...argv].join(' ')}\n# at ${now()}\n`);
     const chunks = [];
+    let logged = 0;
+    let buffered = 0;
+    let dropped = 0;
+    const toLog = (c) => {
+      if (logged + c.length <= LOG_CAP) { logged += c.length; out.write(c); } else dropped += c.length;
+    };
     let child;
     try {
       child = spawn(cmd, argv, { cwd, env, stdio: [input === null ? 'ignore' : 'pipe', 'pipe', 'pipe'], detached: true });
@@ -342,10 +355,11 @@ function run(cmd, argv, { cwd, env, log, deadline, keepStdout = false, input = n
       child.stdin.end(input);
     }
     child.stdout.on('data', (c) => {
-      if (keepStdout) chunks.push(c);
-      if (keepStdout !== 'buffer') out.write(c);
+      // 'buffer' is ours only (docker cp of a pinned image's file); text captures of target steps are capped.
+      if (keepStdout === 'buffer' || (keepStdout && buffered + c.length <= BUF_CAP)) { buffered += c.length; chunks.push(c); }
+      if (keepStdout !== 'buffer') toLog(c);
     });
-    child.stderr.on('data', (c) => out.write(c));
+    child.stderr.on('data', (c) => toLog(c));
     let timedOut = false;
     const left = Math.max(1000, deadline - Date.now());
     const timer = setTimeout(() => {
@@ -361,7 +375,7 @@ function run(cmd, argv, { cwd, env, log, deadline, keepStdout = false, input = n
       // Anything the step left behind in its process group dies with it: an orphan would outlive
       // the job and the runner prints its process name in the public log.
       try { process.kill(-child.pid, 'SIGKILL'); } catch {}
-      out.end(`# exit ${code} signal ${signal}${timedOut ? ' (time limit)' : ''} after ${Date.now() - t0} ms\n`);
+      out.end(`${dropped ? `# ${dropped} bytes of output dropped (log cap)\n` : ''}# exit ${code} signal ${signal}${timedOut ? ' (time limit)' : ''} after ${Date.now() - t0} ms\n`);
       const buf = Buffer.concat(chunks);
       done({ exit: code, signal, timed_out: timedOut, spawn_error: spawnError, ms: Date.now() - t0, stdout: keepStdout === 'buffer' ? buf : buf.toString('utf8') });
     });
@@ -707,6 +721,18 @@ async function runTarget(t, o, ctx, dk) {
     meta.status = e.timeout ? 'timeout' : 'harness_error';
     meta.harness_error = String(e.message ?? e);
   } finally {
+    try { await finishTarget(); } catch (e) {
+      // One target's output must never stop the shard: record it and go on to the next target.
+      meta.status = 'harness_error';
+      meta.harness_error = `record: ${String(e?.message ?? e).slice(0, 200)}`;
+    }
+    meta.public_exit = publicExit(meta);
+    meta.ended = now();
+    writeFileSync(join(odir, 'meta.json'), JSON.stringify(meta, null, 2) + '\n');
+  }
+  return meta;
+
+  async function finishTarget() {
     const lg = L('teardown');
     for (const [i] of (t.backends ?? []).entries()) {
       await dk.d(['logs', `corpus-${tag}-b${i}`], { log: lg, deadline: Date.now() + 60_000 });
@@ -732,14 +758,12 @@ async function runTarget(t, o, ctx, dk) {
     if (existsSync(rdir) && lstatSync(rdir).isDirectory()) {
       for (const r of readdirSync(rdir)) {
         const f = join(rdir, r, 'results.json');
-        if (existsSync(f) && lstatSync(f).isFile()) meta.results.push({ folder: `sandbox/results/${r}`, sha256: sha256File(f), status: safeJson(readFileSync(f, 'utf8'))?.run?.status ?? null });
+        if (!existsSync(f) || !lstatSync(f).isFile()) continue;
+        const big = lstatSync(f).size > JSON_CAP;
+        meta.results.push({ folder: `sandbox/results/${r}`, sha256: sha256File(f), status: big ? 'too large to read' : safeJson(readFileSync(f, 'utf8'))?.run?.status ?? null });
       }
     }
-    meta.public_exit = publicExit(meta);
-    meta.ended = now();
-    writeFileSync(join(odir, 'meta.json'), JSON.stringify(meta, null, 2) + '\n');
   }
-  return meta;
 }
 
 function safeJson(s) {
