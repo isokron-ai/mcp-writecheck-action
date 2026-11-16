@@ -13,3 +13,8 @@ tar -C "$c/out" -czf - . | age -R corpus/recipients.txt -o "$up/corpus-shard-${S
 rm -rf "$c/out" "$c/work"
 # A clear-text leftover of a target's work folder would be a leak; there must be none.
 [ -z "$(find "$c" -mindepth 1 ! -name public.txt -print -quit 2>/dev/null)" ] || { echo "harness error: clear-text files left"; exit 1; }
+# The upload folder must hold exactly one file, and it must be age ciphertext (binary header) with one
+# X25519 recipient stanza: a wrong recipients file or a tampered step fails here, before the upload.
+f="$up/corpus-shard-${SHARD}.tgz.age"
+[ "$(find "$up" -mindepth 1 | wc -l)" -eq 1 ] && [ "$(head -c 22 "$f")" = "age-encryption.org/v1" ] \
+  && [ "$(head -c 4096 "$f" | grep -ac '^-> X25519 ')" -eq 1 ] || { echo "harness error: the upload is not age ciphertext"; rm -rf "$up"; exit 1; }

@@ -100,7 +100,7 @@ export function catalogManifest(command, envNames, confirm) {
 class HarnessError extends Error {}
 
 function args(argv) {
-  const o = { lane: 'ci', shard: 1, shards: 1, only: null, work: null, cliCommit: null };
+  const o = { lane: 'ci', shard: 1, shards: 1, only: null, work: null, cliCommit: null, consumeTargets: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const v = () => {
@@ -116,6 +116,7 @@ function args(argv) {
     else if (a === '--shards') o.shards = Number(v());
     else if (a === '--only') o.only = v().split(',').filter(Boolean);
     else if (a === '--cli-commit') o.cliCommit = v();
+    else if (a === '--consume-targets') o.consumeTargets = true;
     else throw new HarnessError(`unknown option ${a}`);
   }
   for (const k of ['targets', 'cli', 'out']) if (!o[k]) throw new HarnessError(`--${k} is required`);
@@ -161,6 +162,9 @@ function run(cmd, argv, { cwd, env, log, deadline, keepStdout = false, input = n
     child.on('error', (e) => { spawnError = e.message; });
     child.on('close', (code, signal) => {
       clearTimeout(timer);
+      // Anything the step left behind in its process group (a server's child, a helper) dies with it:
+      // an orphan would outlive the job and the runner prints its process name in the public log.
+      try { process.kill(-child.pid, 'SIGKILL'); } catch {}
       out.end(`# exit ${code} signal ${signal}${timedOut ? ' (time limit)' : ''} after ${Date.now() - t0} ms\n`);
       done({ exit: code, signal, timed_out: timedOut, spawn_error: spawnError, ms: Date.now() - t0, stdout });
     });
@@ -228,9 +232,22 @@ async function runTarget(t, o, ctx) {
   };
   const containers = [];
   const vars = { tdir, host: '127.0.0.1' };
-  const baseEnv = { ...process.env, HOME: process.env.HOME, NO_COLOR: '1', npm_config_update_notifier: 'false', DO_NOT_TRACK: '1' };
-  // The CLI token never reaches a target step, even if a workflow mistakenly exported it.
-  for (const k of Object.keys(baseEnv)) if (/^AGE_|TOKEN|SECRET|_KEY$/i.test(k)) delete baseEnv[k];
+  // Target-controlled processes (install, set-up, CLI, server) get an allowlisted environment: no
+  // GITHUB_ENV/GITHUB_PATH/GITHUB_OUTPUT/GITHUB_STEP_SUMMARY (an honest tool that sees GitHub Actions
+  // can write the public summary or later steps' env), no ACTIONS_*/RUNNER_*, no tokens, and a HOME
+  // and package caches of their own, so one target cannot poison the next one's npm or pip cache.
+  // Docker calls are ours and keep the driver's environment (dockerEnv).
+  const home = join(tdir, 'home');
+  mkdirSync(home, { recursive: true });
+  const keep = ['PATH', 'LANG', 'LC_ALL', 'TZ', 'CORPUS_PYTHON'];
+  const baseEnv = {
+    ...Object.fromEntries(keep.filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]])),
+    HOME: home, TMPDIR: join(tdir, 'tmp'), XDG_CACHE_HOME: join(home, '.cache'), XDG_CONFIG_HOME: join(home, '.config'),
+    npm_config_cache: join(home, '.npm'), PIP_CACHE_DIR: join(home, '.cache', 'pip'), UV_CACHE_DIR: join(home, '.cache', 'uv'),
+    NO_COLOR: '1', npm_config_update_notifier: 'false', DO_NOT_TRACK: '1', CORPUS_SANDBOX: '1',
+  };
+  mkdirSync(baseEnv.TMPDIR, { recursive: true });
+  const dockerEnv = process.env;
   try {
     // 1. The artifact, checked against the pinned sha256, then installed.
     if (t.ecosystem === 'npm') {
@@ -286,22 +303,22 @@ async function runTarget(t, o, ctx) {
       for (const [k, v] of Object.entries(fill(b.env ?? {}, vars))) dargs.push('-e', `${k}=${v}`);
       dargs.push(b.image, ...fill(b.args ?? [], vars));
       containers.push(name);
-      await must(run('docker', dargs, { cwd: tdir, env: baseEnv, log: L(`backend-${i}`), deadline }), `backend ${i} start`);
-      const p = await must(run('docker', ['port', name, `${b.port}/tcp`], { cwd: tdir, env: baseEnv, log: L(`backend-${i}`), deadline, keepStdout: true }), `backend ${i} port`);
+      await must(run('docker', dargs, { cwd: tdir, env: dockerEnv, log: L(`backend-${i}`), deadline }), `backend ${i} start`);
+      const p = await must(run('docker', ['port', name, `${b.port}/tcp`], { cwd: tdir, env: dockerEnv, log: L(`backend-${i}`), deadline, keepStdout: true }), `backend ${i} port`);
       const port = p.stdout.trim().split('\n')[0].split(':').pop();
       vars[`port${i}`] = port;
-      const ins = await run('docker', ['image', 'inspect', '--format', '{{json .RepoDigests}}', b.image], { cwd: tdir, env: baseEnv, log: L(`backend-${i}`), deadline, keepStdout: true });
+      const ins = await run('docker', ['image', 'inspect', '--format', '{{json .RepoDigests}}', b.image], { cwd: tdir, env: dockerEnv, log: L(`backend-${i}`), deadline, keepStdout: true });
       meta.backends.push({ image: b.image, repo_digests: safeJson(ins.stdout), container_port: b.port });
       const waitUntil = Math.min(deadline, Date.now() + (b.wait_timeout_s ?? 120) * 1000);
       let ok = !b.wait;
       while (!ok && Date.now() < waitUntil) {
-        const w = await run('docker', ['exec', name, ...fill(b.wait, vars)], { cwd: tdir, env: baseEnv, log: L(`backend-${i}`), deadline });
+        const w = await run('docker', ['exec', name, ...fill(b.wait, vars)], { cwd: tdir, env: dockerEnv, log: L(`backend-${i}`), deadline });
         ok = w.exit === 0;
         if (!ok) await new Promise((r) => setTimeout(r, 2000));
       }
       if (!ok) throw new HarnessError(`backend ${i} not ready`);
       for (const s of b.setup ?? []) {
-        const r = await must(run('docker', ['exec', ...(s.user ? ['-u', s.user] : []), name, ...fill(s.exec, vars)], { cwd: tdir, env: baseEnv, log: L(`backend-${i}`), deadline, keepStdout: !!s.capture }), `backend ${i} set-up`);
+        const r = await must(run('docker', ['exec', ...(s.user ? ['-u', s.user] : []), name, ...fill(s.exec, vars)], { cwd: tdir, env: dockerEnv, log: L(`backend-${i}`), deadline, keepStdout: !!s.capture }), `backend ${i} set-up`);
         if (s.capture) vars[s.capture] = r.stdout.trim().split('\n').pop();
       }
     }
@@ -453,7 +470,9 @@ async function main() {
     mkdirSync(join(o.out, '_shard'), { recursive: true });
     o.work = resolve(o.work ?? join(o.out, '..', `work-${o.shard}`));
     mkdirSync(o.work, { recursive: true });
-    const list = JSON.parse(readFileSync(o.targets, 'utf8'));
+    const raw = readFileSync(o.targets);
+    if (o.consumeTargets) rmSync(o.targets, { force: true }); // no clear-text list on disk while targets run
+    const list = JSON.parse(raw.toString('utf8'));
     if (list.format !== TARGETS_FORMAT) throw new HarnessError('the target list has another format');
     const mine = list.targets
       .filter((t) => (t.lane ?? 'ci') === o.lane && t.enabled !== false)
@@ -461,7 +480,7 @@ async function main() {
       .filter((_, i) => i % o.shards === o.shard - 1);
     const ctx = await context(o);
     ctx.defaults = list.defaults ?? {};
-    const shard = { format: RUN_FORMAT, label: LABEL, lane: o.lane, shard: o.shard, shards: o.shards, targets_list_sha256: sha256File(o.targets), targets_list_updated: list.updated ?? null, cli: ctx.cli, spec: ctx.spec, runner: ctx.runner, github: ctx.github, started: now(), targets: [] };
+    const shard = { format: RUN_FORMAT, label: LABEL, lane: o.lane, shard: o.shard, shards: o.shards, targets_list_sha256: createHash('sha256').update(raw).digest('hex'), targets_list_updated: list.updated ?? null, cli: ctx.cli, spec: ctx.spec, runner: ctx.runner, github: ctx.github, started: now(), targets: [] };
     for (const t of mine) {
       const m = await runTarget(t, o, ctx);
       shard.targets.push({ id: t.id, status: m.status, cli_exit: m.cli_exit, public_exit: m.public_exit, results: m.results.map((r) => r.sha256) });

@@ -109,3 +109,25 @@ test('a shard with only a verdict is green', () => {
   assert.equal(r.stdout, `${LABEL}\nrun finished, exit 0\n`);
   assert.equal(r.status, 0);
 });
+
+test('target processes get an allowlisted environment: no GitHub file commands, no tokens, own HOME', () => {
+  const d = stand(0);
+  const main = join(d, 'cli', 'dist', 'src', 'cli', 'main.js');
+  writeFileSync(main, `if (process.argv[2] === 'catalog') require('node:fs').writeFileSync(${JSON.stringify(join(d, 'env.json'))}, JSON.stringify(process.env));\n` + readFileSync(main, 'utf8'));
+  writeFileSync(join(d, 'summary.md'), '');
+  const env = { ...process.env, GITHUB_STEP_SUMMARY: join(d, 'summary.md'), GITHUB_ENV: join(d, 'genv'), GITHUB_OUTPUT: join(d, 'gout'), GITHUB_ACTIONS: 'true', MWS_CLI_TOKEN: 'x', ACTIONS_RUNTIME_TOKEN: 'y' };
+  const r = spawnSync(process.execPath, [join(root, 'corpus', 'run-shard.mjs'), '--targets', join(d, 'targets.json'), '--cli', join(d, 'cli'), '--cli-commit', 'f'.repeat(40), '--out', join(d, 'out'), '--work', join(d, 'work'), '--only', 't01'], { encoding: 'utf8', env });
+  assert.equal(r.status, 0);
+  const seen = JSON.parse(readFileSync(join(d, 'env.json'), 'utf8'));
+  for (const k of ['GITHUB_STEP_SUMMARY', 'GITHUB_ENV', 'GITHUB_OUTPUT', 'GITHUB_ACTIONS', 'MWS_CLI_TOKEN', 'ACTIONS_RUNTIME_TOKEN']) assert.ok(!(k in seen), k);
+  assert.ok(seen.HOME.startsWith(join(d, 'work')));
+  assert.equal(readFileSync(join(d, 'summary.md'), 'utf8'), '');
+});
+
+test('--consume-targets removes the clear-text list before any target runs', () => {
+  const d = stand(0);
+  const r = spawnSync(process.execPath, [join(root, 'corpus', 'run-shard.mjs'), '--targets', join(d, 'targets.json'), '--consume-targets', '--cli', join(d, 'cli'), '--cli-commit', 'f'.repeat(40), '--out', join(d, 'out'), '--work', join(d, 'work'), '--only', 't01'], { encoding: 'utf8' });
+  assert.equal(r.status, 0);
+  assert.throws(() => readFileSync(join(d, 'targets.json')));
+  assert.match(JSON.parse(readFileSync(join(d, 'out', '_shard', 'shard.json'), 'utf8')).targets_list_sha256, /^[0-9a-f]{64}$/);
+});
