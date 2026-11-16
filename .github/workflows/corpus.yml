@@ -24,11 +24,12 @@
 # secrets, the clear-text list, the encrypt step, the upload) is out of the containers' reach.
 #
 # Security: schedule and manual dispatch only, from main; no pull_request or pull_request_target, so
-# no pull request (fork or branch) ever runs with a secret. Both secrets live in the `corpus`
-# environment, whose deployment branches are limited to main. MWS_CLI_TOKEN (read-only on the CLI's
-# repository) is used by one checkout step before any third-party code is installed, and not at all
-# once the repository variable MWS_CLI_PUBLIC is 'true' (the CLI's repository is public then);
-# CORPUS_TARGETS_KEY only by the decrypt step. Third-party actions are pinned by full SHA.
+# no pull request (fork or branch) ever runs with a secret. CORPUS_TARGETS_KEY lives only in the
+# `corpus` environment, whose deployment branches are limited to main, and is used only by the
+# decrypt step. MWS_CLI_TOKEN is a repository secret (the dogfood workflows use it), so the
+# environment cannot keep it out: this workflow is first run once the repository variable
+# MWS_CLI_PUBLIC is 'true' (the CLI's repository is public), and then the token is not used at all.
+# Third-party actions are pinned by full SHA.
 
 name: corpus
 
@@ -60,8 +61,8 @@ jobs:
     if: github.repository == 'isokron-ai/mcp-writecheck-action' && github.ref == 'refs/heads/main'
     name: corpus-shard-${{ matrix.shard }}
     runs-on: ubuntu-24.04
-    # Both secrets live in this environment, whose deployment branches are limited to main: a branch
-    # with an edited copy of this workflow (dispatch or push) cannot read them.
+    # CORPUS_TARGETS_KEY lives only in this environment, whose deployment branches are limited to
+    # main: a branch with an edited copy of this workflow (dispatch or push) cannot read it.
     environment: corpus
     timeout-minutes: 120
     strategy:

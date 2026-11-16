@@ -22,14 +22,22 @@ Every target is treated as hostile. Nothing a target ships runs on the runner it
 
 - Install, set-up, the CLI and the server run in containers of the digest-pinned image in
   `images.json`, as user `10001`, with `--cap-drop ALL`, `no-new-privileges`, a read-only root,
-  a tmpfs `/tmp`, and pid and memory limits.
+  a tmpfs `/tmp`, and pid, memory and CPU limits (`--cpus 2`, or fewer if Docker has fewer).
+  The target's own `bin` folder comes last on `PATH`, so a package that ships a `node`, `npm`, `uv`
+  or `sh` cannot replace the tools that run the CLI.
 - Only Docker volumes are mounted: the target's own work volume, the CLI (read-only) and, for PyPI
   targets, `uv` (read-only). Never the workspace, `RUNNER_TEMP`, `_actions`, the home folder or the
   Docker socket. Files go in through stdin; results come out through a helper that copies regular
-  files and folders only, under a size cap.
+  files and folders only, under a size cap. Our helper containers carry the target's label and a
+  time limit, so one stuck on something the target planted is removed with it.
+- Output is bounded: each command's log keeps 64 MiB, captured output 16 MiB, and a `results.json`
+  over 64 MiB is recorded by sha256 and size only. One target's output never stops the shard, and
+  every target gets its `meta.json`.
 - The install step has network egress (registries). Everything after it (set-up, the CLI, the
   server) runs on an `--internal` network that only that target's backends share. `net-guard.sh`
-  keeps every container network away from the runner and the cloud metadata addresses.
+  keeps every container network away from the runner and the cloud metadata addresses; it stops
+  the job if forwarded traffic does not pass through its rules. Docker Engine 26.0.0 or later is
+  required (older engines let `--internal` networks resolve outside names, CVE-2024-29018).
 - Backends are digest-pinned too, on the internal network only, with every capability dropped
   except a short allowlist a backend may ask for (`CHOWN`, `DAC_OVERRIDE`, `FOWNER`, `SETUID`,
   `SETGID`, `KILL`, `NET_BIND_SERVICE`). No host port is published.
@@ -39,7 +47,14 @@ Every target is treated as hostile. Nothing a target ships runs on the runner it
 - Dependencies are hash-locked: npm targets install with `npm ci` from a pinned `package-lock.json`
   (install scripts off unless the list says otherwise, and then only inside the container); PyPI
   targets with `uv pip install --require-hashes` from a lock compiled for the platform, wheels only
-  unless the list says otherwise.
+  unless the list says otherwise. Before installing, the driver checks the lock: npm packages only
+  from `https://registry.npmjs.org/`, each with an integrity hash (the target itself only from its
+  checked artifact); PyPI lines only `name==version` with sha256 hashes (no URL, VCS, file or index
+  option). Anything else is a harness error.
+- On IsoKron's Mac (lane `mac`, or the driver running on macOS), the install network reaches the
+  Mac's own loopback and LAN through Docker Desktop, and no guard runs inside its VM. So targets
+  with `install_scripts` or `allow_build` (target code during install) are refused there; they run
+  on the CI runners only.
 
 What stays on the runner: the decrypted list (deleted by the driver before the first target
 runs), the secrets, the encrypt step and the upload.
@@ -75,16 +90,14 @@ A shard fails only when some target's `N` is not 0. A server's verdicts never fa
 
 ## Secrets
 
-Both live in the repository's `corpus` environment, whose deployment branches are limited to `main`.
-
-| Secret | Use |
-|---|---|
-| `MWS_CLI_TOKEN` | Read-only checkout of the CLI while its repository is private; one step, before any third-party code. Not used once the repository variable `MWS_CLI_PUBLIC` is `true` |
-| `CORPUS_TARGETS_KEY` | The age identity that decrypts `targets.json.age`; used by one step |
+| Secret | Where | Use |
+|---|---|---|
+| `CORPUS_TARGETS_KEY` | The `corpus` environment only (deployment branch `main`); never a repository secret, or the environment's branch rule does not protect it | The age identity that decrypts `targets.json.age`; used by one step |
+| `MWS_CLI_TOKEN` | A repository secret (the dogfood workflows use it), so the environment cannot keep it out of this job | Read-only checkout of the CLI while its repository is private. The corpus workflow is enabled only once the repository variable `MWS_CLI_PUBLIC` is `true`: the CLI is then checked out without a token, and the corpus job never holds it |
 
 ## Running the driver locally
 
-Needs Docker (Linux containers; Docker Desktop or colima on a Mac).
+Needs Docker Engine 26.0.0 or later (Linux containers; Docker Desktop or colima on a Mac).
 
 ```sh
 node corpus/run-shard.mjs --targets targets.json --cli <built mcp-writecheck package> \
@@ -92,4 +105,6 @@ node corpus/run-shard.mjs --targets targets.json --cli <built mcp-writecheck pac
 ```
 
 Unit tests: `node --test test/corpus.test.mjs test/corpus-workflow.test.mjs`. The sandbox against a
-real daemon: `CORPUS_DOCKER_TESTS=1 node --test test/corpus-container.test.mjs`.
+real daemon: `CORPUS_DOCKER_TESTS=1 node --test test/corpus-container.test.mjs` (add
+`CORPUS_SMOKE_CLI=<built mcp-writecheck package>` for the real CLI, `CORPUS_DOCKER_NET=1` for the PyPI
+test, which needs registry egress from containers).
