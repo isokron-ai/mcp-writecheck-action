@@ -9,12 +9,40 @@ looking for. It is not a findings channel, and it publishes no verdicts.
 
 | Item | Where |
 |---|---|
-| The workflow, the driver (`run-shard.mjs`) and the helper scripts | This folder, in clear text |
-| The target list (package, version, artifact sha256, licence, how to start the backend and the server) | `targets.json.age`, encrypted; decrypted at run time with the `CORPUS_TARGETS_KEY` secret |
+| The workflow, the driver (`run-shard.mjs`), the helper scripts and the container images (`images.json`) | This folder, in clear text |
+| The target list (package, version, artifact sha256, lockfiles, licence, how to start the backend and the server) | `targets.json.age`, encrypted; decrypted at run time with the `CORPUS_TARGETS_KEY` secret |
 | Results: `results.json`, `report.md`, the CLI's ledger, logs and run metadata | Encrypted to the archive key in `recipients.txt` before upload; the private key is held by IsoKron on its own machine, never in this repository or in CI |
-| Logs and job summary | Only `automated candidate, unreviewed: not a finding` and one `run finished, exit N` line per target |
+| Logs and job summary | Only `automated candidate, unreviewed: not a finding` and one `run finished, exit N` line per target, in an order shuffled per run |
 
 Job and artifact names are generic (`corpus-shard-N`). Nothing is cached between runs.
+
+## How a target is isolated
+
+Every target is treated as hostile. Nothing a target ships runs on the runner itself:
+
+- Install, set-up, the CLI and the server run in containers of the digest-pinned image in
+  `images.json`, as user `10001`, with `--cap-drop ALL`, `no-new-privileges`, a read-only root,
+  a tmpfs `/tmp`, and pid and memory limits.
+- Only Docker volumes are mounted: the target's own work volume, the CLI (read-only) and, for PyPI
+  targets, `uv` (read-only). Never the workspace, `RUNNER_TEMP`, `_actions`, the home folder or the
+  Docker socket. Files go in through stdin; results come out through a helper that copies regular
+  files and folders only, under a size cap.
+- The install step has network egress (registries). Everything after it (set-up, the CLI, the
+  server) runs on an `--internal` network that only that target's backends share. `net-guard.sh`
+  keeps every container network away from the runner and the cloud metadata addresses.
+- Backends are digest-pinned too, on the internal network only, with every capability dropped
+  except a short allowlist a backend may ask for (`CHOWN`, `DAC_OVERRIDE`, `FOWNER`, `SETUID`,
+  `SETGID`, `KILL`, `NET_BIND_SERVICE`). No host port is published.
+- Containers get a fixed environment: no GitHub file commands (`GITHUB_ENV`, `GITHUB_STEP_SUMMARY`
+  and the rest), no `ACTIONS_*` or `RUNNER_*`, no token, and a `HOME` and caches inside the target's
+  own volume.
+- Dependencies are hash-locked: npm targets install with `npm ci` from a pinned `package-lock.json`
+  (install scripts off unless the list says otherwise, and then only inside the container); PyPI
+  targets with `uv pip install --require-hashes` from a lock compiled for the platform, wheels only
+  unless the list says otherwise.
+
+What stays on the runner: the decrypted list (deleted by the driver before the first target
+runs), the secrets, the encrypt step and the upload.
 
 ## What `exit N` means
 
@@ -26,38 +54,42 @@ Job and artifact names are generic (`corpus-shard-N`). Nothing is cached between
 | 2, 3, 4, 130 | The CLI's own usage or manifest error, refusal, stopped run, interruption |
 | 70 | The CLI crashed |
 | 124 | The target hit its time limit |
-| 125 | Harness error: download, checksum, install, backend start or set-up |
+| 125 | Harness error: download, checksum, a missing lock, install, backend start, set-up, a container that did not start |
 
 A shard fails only when some target's `N` is not 0. A server's verdicts never fail a job.
 
 ## Rules the corpus keeps
 
-- Every backend runs inside the job (Docker on the runner, or local files). No target is pointed at
-  an external service or account.
-- Every target is pinned: the exact registry artifact by sha256, dependencies resolved as of a fixed
-  date, backend images by digest. Each run records the server version and artifact sha256, the
-  source commit where the registry carries one, the CLI commit, the spec version, the manifest hash,
-  the runner image and the date.
+- Every backend runs inside the job (Docker on the runner). No target is pointed at an external
+  service or account.
+- Every target is pinned: the exact registry artifact by sha256, the dependency tree by lockfile
+  hashes, images by digest. Each run records the server version and artifact sha256, the lock's
+  sha256, the source commit where the registry carries one, the CLI commit, the spec version, the
+  manifest hash, the image digests, the runner image and the date.
 - Open-source licences that permit running the software, only.
 - Standard GitHub-hosted runners and a few dozen targets at most; the long tail runs on IsoKron's own
-  hardware with the same driver and record format.
-- Schedule and manual dispatch only, from `main`. No `pull_request` or `pull_request_target` trigger,
-  so no pull request runs with either secret.
+  hardware with the same driver, the same containers and the same record format.
+- Schedule and manual dispatch only, from `main`. No `pull_request` or `pull_request_target` trigger.
 - Catalog and plan modes for every target. A full run happens only for a target whose hand-written
   manifest and plan hash a person has read and accepted, and only against its in-job backend.
 
 ## Secrets
 
+Both live in the repository's `corpus` environment, whose deployment branches are limited to `main`.
+
 | Secret | Use |
 |---|---|
-| `MWS_CLI_TOKEN` | Read-only checkout of the CLI, as in the dogfood workflows; one step, before any third-party code runs |
+| `MWS_CLI_TOKEN` | Read-only checkout of the CLI while its repository is private; one step, before any third-party code. Not used once the repository variable `MWS_CLI_PUBLIC` is `true` |
 | `CORPUS_TARGETS_KEY` | The age identity that decrypts `targets.json.age`; used by one step |
 
 ## Running the driver locally
 
+Needs Docker (Linux containers; Docker Desktop or colima on a Mac).
+
 ```sh
 node corpus/run-shard.mjs --targets targets.json --cli <built mcp-writecheck package> \
-  --out out --work work --lane ci [--shard 1 --shards 4] [--only t01,t02]
+  --out out --lane ci [--shard 1 --shards 4] [--only t01,t02] [--consume-targets]
 ```
 
-Unit tests: `node --test test/corpus.test.mjs`.
+Unit tests: `node --test test/corpus.test.mjs test/corpus-workflow.test.mjs`. The sandbox against a
+real daemon: `CORPUS_DOCKER_TESTS=1 node --test test/corpus-container.test.mjs`.

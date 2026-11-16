@@ -3,23 +3,32 @@
 # What this is for: finding bugs in mcp-writecheck and this action on servers we did not write.
 # It is not a findings channel. Nothing target-specific appears here or in the logs:
 #   - the target list is not in the repository in clear text: corpus/targets.json.age is decrypted at
-#     run time with the CORPUS_TARGETS_KEY secret, inside one step, and deleted at the end of the job;
+#     run time with the CORPUS_TARGETS_KEY secret, inside one step, and the driver deletes the clear
+#     text before any target runs;
 #   - job and step names are generic; logs and the job summary print only the label
-#     "automated candidate, unreviewed: not a finding" and one "run finished, exit N" line per target
-#     (N is our tool's or the harness's status, never a verdict: corpus/README.md);
+#     "automated candidate, unreviewed: not a finding" and one "run finished, exit N" line per target,
+#     in an order shuffled per run (N is our tool's or the harness's status, never a verdict:
+#     corpus/README.md);
 #   - every install, backend, server and CLI output goes to files that are age-encrypted to IsoKron's
 #     archive key (corpus/recipients.txt) before upload. The private key is not in this repository
 #     or in CI. Nothing is cached;
 #   - a target's verdicts never fail a job. Only a CLI crash or error, a time limit or a harness error
 #     turns a shard red.
-# Backends run inside the job (Docker on the runner, local files); no target touches an external
-# service or account. Standard GitHub-hosted runners only; a few dozen pinned targets at most (the
-# long tail runs elsewhere, with the same script and record format).
+#
+# Isolation: every target is untrusted. Its install, set-up, CLI run and server run in containers of
+# a digest-pinned image (corpus/images.json) as user 10001, with no capabilities, no-new-privileges,
+# a read-only root, a tmpfs /tmp, and only Docker volumes mounted: never the workspace, RUNNER_TEMP,
+# _actions or the Docker socket. Install has egress; everything after it runs on an --internal
+# network shared only with that target's digest-pinned backends. corpus/net-guard.sh keeps the
+# install network away from the runner itself and the cloud metadata addresses. The host side (the
+# secrets, the clear-text list, the encrypt step, the upload) is out of the containers' reach.
 #
 # Security: schedule and manual dispatch only, from main; no pull_request or pull_request_target, so
-# no pull request (fork or branch) ever runs with either secret. MWS_CLI_TOKEN (read-only on the CLI's
-# repository) is used by one checkout step before any third-party code is installed; CORPUS_TARGETS_KEY
-# only by the decrypt step. Third-party actions are pinned by full SHA.
+# no pull request (fork or branch) ever runs with a secret. Both secrets live in the `corpus`
+# environment, whose deployment branches are limited to main. MWS_CLI_TOKEN (read-only on the CLI's
+# repository) is used by one checkout step before any third-party code is installed, and not at all
+# once the repository variable MWS_CLI_PUBLIC is 'true' (the CLI's repository is public then);
+# CORPUS_TARGETS_KEY only by the decrypt step. Third-party actions are pinned by full SHA.
 
 name: corpus
 
@@ -72,8 +81,11 @@ jobs:
         env:
           INPUT_REF: ${{ inputs.cli-ref }}
         run: dogfood/cli-ref.sh
-      # The CLI first, before any third-party code runs in this job: the only step with the token.
+      # The CLI first, before any third-party code runs in this job. While the CLI's repository is
+      # private this is the only step with MWS_CLI_TOKEN; once it is public (repository variable
+      # MWS_CLI_PUBLIC = 'true') the second form runs instead and the token is not used at all.
       - name: Check out mcp-writecheck
+        if: vars.MWS_CLI_PUBLIC != 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: isokron-ai/mcp-write-safety
@@ -82,10 +94,21 @@ jobs:
           path: mws-cli
           sparse-checkout: packages/writecheck
           persist-credentials: false
+      - name: Check out mcp-writecheck (public)
+        if: vars.MWS_CLI_PUBLIC == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: isokron-ai/mcp-write-safety
+          ref: ${{ steps.cliref.outputs.ref }}
+          path: mws-cli
+          sparse-checkout: packages/writecheck
+          persist-credentials: false
       - name: Build mcp-writecheck
         run: dogfood/build-cli.sh
       - name: Install age
         run: corpus/install-age.sh
+      - name: Guard the container networks
+        run: sudo corpus/net-guard.sh
       - name: Decrypt the target list
         env:
           CORPUS_TARGETS_KEY: ${{ secrets.CORPUS_TARGETS_KEY }}
