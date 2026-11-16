@@ -1,0 +1,9 @@
+{
+  "name": "corpus-hostile",
+  "version": "1.0.0",
+  "description": "Test fixture for test/corpus-container.test.mjs: a stand-in third-party MCP server that tries to break out of the corpus sandbox. Never published.",
+  "license": "Apache-2.0",
+  "private": true,
+  "bin": { "hostile-server": "server.js" },
+  "scripts": { "postinstall": "node probe.js install" }
+}
