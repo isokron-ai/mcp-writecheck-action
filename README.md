@@ -136,7 +136,7 @@ The CLI's `--baseline` (known violations that do not fail a run) and `--sign` op
 
 The action measures no memory. A run that hangs, or a process that is killed for lack of memory, shows only through what the CLI saw. In the workflow:
 
-- **Set `timeout-minutes` on the job.** Without it a job can run for six hours. When the timeout cancels the job, the action forwards the cancellation to the CLI, which stops the run and cleans up as for any cancellation; what it could not delete is in the artifact's `state/` folder (see [Modes](#full-real-writes-test-environment-required)).
+- **Set `timeout-minutes` on the job.** Without it a job can run for six hours. When the timeout cancels the job, the action forwards the cancellation to the CLI, which stops the run and cleans up as for any cancellation, within the runner's grace period before it kills the job; what it could not delete is in the artifact's `state/` folder (see [`full` mode](#full-real-writes-test-environment-required)).
 - **Know your runner's memory limit.** GitHub lists the memory of its hosted runners under [Supported runners and hardware resources](https://docs.github.com/en/actions/reference/runners/github-hosted-runners); a self-hosted runner has what its machine or container gives it. The CLI, the server under test, a backend the job starts and the runner itself share that memory, and when it runs out the system kills one of them.
 - **Limit and check what you start.** On a self-hosted runner, set a memory limit on the runner's service or container, so that a run that grows ends the job and not the machine. Give a backend the job starts its own limit (`docker run --memory 1g …`, or `options: --memory 1g` on a service container), and check after the run that it is still up and was not killed:
 
@@ -144,13 +144,15 @@ The action measures no memory. A run that hangs, or a process that is killed for
   - name: Check the test backend after the run
     if: ${{ always() }}
     run: |
-      read -r running oom code < <(docker inspect --format '{{.State.Running}} {{.State.OOMKilled}} {{.State.ExitCode}}' test-backend)
+      out=$(docker inspect --format '{{.State.Running}} {{.State.OOMKilled}} {{.State.ExitCode}}' test-backend) \
+        || { echo "test backend: container not found"; exit 1; }
+      read -r running oom code <<< "$out"
       echo "test backend: running=$running oom_killed=$oom exit_code=$code"
       if [ "$running" != true ] || [ "$oom" != false ]; then exit 1; fi
   ```
 
-  For a service container, use `${{ job.services.<id>.id }}` in place of the name. A backend that was killed part-way, or restarted empty, makes the results describe that and not the server; this step tells the two apart.
-- **An out-of-memory kill of the CLI already fails the job.** The CLI then ends on SIGKILL (137 in a shell), which is not a status after which a complete results folder exists, so the job fails whatever `fail-on` says, as for any run that did not complete. A green job from a killed process would hide that nothing was judged. The results folder is still uploaded, with the `state/` folder for `mcp-writecheck cleanup`.
+  For a service container, put `${{ job.services.<id>.id }}` in the `docker inspect` line in place of `test-backend`. A backend that was killed part-way, or restarted empty, makes the results describe that and not the server; this step tells the two apart.
+- **An out-of-memory kill of the CLI already fails the job.** The CLI is then ended by SIGKILL and has no exit status of its own (a shell would show 137), which is not a status after which a complete results folder exists, so the job fails whatever `fail-on` says, as for any run that did not complete. A green job from a killed process would hide that nothing was judged. The results folder is still uploaded, with the `state/` folder for `mcp-writecheck cleanup`.
 
 ## The artifact
 
