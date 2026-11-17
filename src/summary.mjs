@@ -14,6 +14,7 @@
  * that were lost (the bystander inventory), setup that was not released, objects left behind.
  */
 
+import { memoryAttention, memoryCell } from './memory.mjs';
 import { CLI, KIT_HELPERS, KITS, LEFT_BY_DECLARATION, RESULTS_FIELDS, requirementUrl, REQUIREMENT_ID, SETUP, SPEC, VERDICTS } from '../contract.mjs';
 
 const REGISTRY = new Map(SPEC.requirements.map((r) => [r.id, r]));
@@ -260,7 +261,7 @@ function statusLines(decision, failOn) {
 }
 
 /** The lines of the sections that come before the verdicts: what the tester's seat belts saw. */
-function safetySections(doc, facts) {
+function safetySections(doc, facts, extraWarn = []) {
   const L = [];
   if (facts.lost.length) {
     L.push('');
@@ -291,6 +292,7 @@ function safetySections(doc, facts) {
   for (const c of facts.canariesChanged) warn.push(`Untouched-state canary ${code(c.name)} changed during the run${c.note ? ` (${md(c.note)})` : ''}.`);
   for (const f of facts.fixturesNotRestored) warn.push(`Fixture ${code(f.resource)} was not put back to its original values${f.note ? ` (${md(f.note)})` : ''}.`);
   for (const f of setupFacts(doc, null).failed) warn.push(`The set-up of the object under test of ${code(f.resource)} failed, so its checks are \`not tested\`: ${md(f.reason)}.`);
+  warn.push(...extraWarn);
   if (facts.leftByDeclaration.length) {
     const policies = uniq(facts.leftByDeclaration.map((x) => x.reason)).map(md).join('; ');
     L.push('');
@@ -305,8 +307,25 @@ function safetySections(doc, facts) {
   return L;
 }
 
+/** The table row for the sampled peak memory (src/memory.mjs), when the caller measured it. */
+function memoryRow(o) {
+  return o.memory === undefined ? [] : [`| Peak memory | ${memoryCell(o.memory)} |`];
+}
+
+/** "Needs attention" lines from the memory measurement. They never enter decide(). */
+function memoryWarn(o) {
+  const line = memoryAttention(o.memory, o.ceilingMb ?? null);
+  return line ? [line] : [];
+}
+
+function attentionSection(warn) {
+  if (!warn.length) return [];
+  return ['', '### Needs attention', '', ...warn.map((w) => `- ${w}`)];
+}
+
 /**
- * @param {{ doc: object, specUrl: string, failOn: string, cliExit: number, decision: object, cliVersion: string, artifactName: string, mode?: 'full'|'catalog', maxBytes?: number }} o
+ * @param {{ doc: object, specUrl: string, failOn: string, cliExit: number, decision: object, cliVersion: string, artifactName: string, mode?: 'full'|'catalog', maxBytes?: number, memory?: object|null, ceilingMb?: number|null }} o
+ *   memory: the sampled peak (src/memory.mjs), shown as a row; ceilingMb: `max-rss-mb`. Neither affects the job status.
  */
 export function renderRun(o) {
   const { doc, specUrl } = o;
@@ -327,6 +346,7 @@ export function renderRun(o) {
   if (doc.target?.catalog_fingerprint) L.push(`| Catalog | ${code(doc.target.catalog_fingerprint)} |`);
   L.push(`| Mode, fail-on | ${mode}, ${md(o.failOn)} |`);
   L.push(`| CLI exit status | ${o.cliExit} (${md(CLI.exit[o.cliExit] ?? 'not documented')}) |`);
+  L.push(...memoryRow(o));
   L.push('');
   L.push(...statusLines(o.decision, o.failOn));
   if (mode === 'catalog') {
@@ -335,7 +355,7 @@ export function renderRun(o) {
   }
 
   // Things a person must not miss, whatever the verdicts are.
-  L.push(...safetySections(doc, facts));
+  L.push(...safetySections(doc, facts, memoryWarn(o)));
 
   // Violated records, in full.
   const violated = results.filter((r) => r.verdict === 'violated');
@@ -453,9 +473,11 @@ export function renderPlan(o) {
   L.push(`| Manifest | ${code(o.manifest)} |`);
   L.push(`| Plan hash | ${o.planHash ? code(o.planHash) : 'not printed'} |`);
   L.push(`| CLI exit status | ${o.cliExit} (${md(CLI.exit[o.cliExit] ?? 'not documented')}) |`);
+  L.push(...memoryRow(o));
   L.push('');
   if (o.decision.fail) L.push(`**Job status: failed.** ${o.decision.reasons.join(' ')}`);
   else L.push('**Job status: not failed.** The plan was built. This says nothing about the server\'s behavior: no write path was exercised.');
+  L.push(...attentionSection(memoryWarn(o)));
   if (o.planHash) {
     L.push('');
     L.push('The hash covers the manifest, the catalog, the suite version, the limits and every host named by a URL in the server\'s environment. A full run has the same hash only if all of these are the same there.');
@@ -481,6 +503,11 @@ export function renderNoResults(o) {
   L.push('## mcp-writecheck: no results');
   L.push('');
   L.push(`**Job status: failed.** ${o.decision.reasons.join(' ')}`);
+  if (o.memory !== undefined) {
+    L.push('');
+    L.push(`Peak memory: ${memoryCell(o.memory)}.`);
+  }
+  L.push(...attentionSection(memoryWarn(o)));
   if (o.planHashSeen && o.planHashGiven && o.planHashSeen !== o.planHashGiven) {
     L.push('');
     L.push(`The \`plan-hash\` input is ${code(o.planHashGiven)}; today's plan has the hash ${code(o.planHashSeen)}. The manifest, the catalog, the limits, the suite or the hosts changed since the hash was written into the workflow. Read the plan (run this action with \`mode: plan\`, or \`mcp-writecheck plan\`), and only then update the input. The action does not do this for you: the hash is the confirmation that a person has seen what the run will write.`);

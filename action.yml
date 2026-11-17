@@ -61,6 +61,14 @@ inputs:
     description: Name of the uploaded artifact. Give each job of a matrix its own name.
     required: false
     default: mcp-writecheck-results
+  max-rss-mb:
+    description: >-
+      Optional. A memory ceiling in MB (1 MB = 1024 KiB). The action samples the memory of the CLI
+      and every process under it (exact on Linux, approximate on macOS, not measured on Windows) and
+      shows the peak in the summary. When the peak reaches this value, the summary says so under
+      "Needs attention". It never changes the job status.
+    required: false
+    default: ''
   cli-path:
     description: >-
       Optional. Folder of an mcp-writecheck package that is already built (it holds
@@ -117,6 +125,7 @@ runs:
         INPUT_SPEC_URL: ${{ inputs.spec-url }}
         INPUT_RESULTS_DIR: ${{ inputs.results-dir }}
         INPUT_ARTIFACT_NAME: ${{ inputs.artifact-name }}
+        INPUT_MAX_RSS_MB: ${{ inputs.max-rss-mb }}
       # exec: a signal the runner sends to this step's shell reaches the script itself.
       run: exec node "$GITHUB_ACTION_PATH/src/main.mjs"
 
