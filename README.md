@@ -161,7 +161,7 @@ With `max-rss-mb`, a peak that reaches the ceiling gets a line under "Needs atte
   ```
 
   For a service container, put `${{ job.services.<id>.id }}` in the `docker inspect` line in place of `test-backend`. A backend that was killed part-way, or restarted empty, makes the results describe that and not the server; this step tells the two apart.
-- **An out-of-memory kill of the CLI already fails the job.** The CLI is then ended by SIGKILL and has no exit status of its own (a shell would show 137), which is not a status after which a complete results folder exists, so the job fails whatever `fail-on` says, as for any run that did not complete. A green job from a killed process would hide that nothing was judged. The results folder is still uploaded, with the `state/` folder for `mcp-writecheck cleanup`.
+- **An out-of-memory kill of the CLI already fails the job.** The CLI is then ended by SIGKILL and has no exit status of its own (a shell would show 137), which is not a status after which a complete results folder exists, so the job fails whatever `fail-on` says, as for any run that did not complete; the summary names the signal and the `cli-exit-code` output is empty. A green job from a killed process would hide that nothing was judged. The results folder is still uploaded, with the `state/` folder for `mcp-writecheck cleanup`.
 
 ## The artifact
 

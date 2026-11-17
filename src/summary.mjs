@@ -150,11 +150,35 @@ export function setupFacts(doc, plan) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// The CLI's ending
+// ---------------------------------------------------------------------------------------------
+
+/** Only a signal name from the platform's list is printed; anything else is "a signal". */
+const signalName = (sig) => (typeof sig === 'string' && /^SIG[A-Z0-9]{1,10}$/.test(sig) ? sig : 'a signal');
+
+/**
+ * How the CLI ended, for a sentence: "exited with status 4 (…)" or, for a process ended by a signal (no exit
+ * status of its own), "was ended by SIGKILL and has no exit status (…)".
+ */
+export function cliEndText(cliExit, cliSignal = null) {
+  if (typeof cliExit === 'number') return `exited with status ${cliExit} (${CLI.exit[cliExit] ?? 'not a status it documents'})`;
+  if (cliSignal) return `was ended by ${signalName(cliSignal)} and has no exit status${cliSignal === 'SIGKILL' ? ' (most often the system\'s out-of-memory killer, or the runner killing the job)' : ''}`;
+  return 'ended without an exit status';
+}
+
+/** The "CLI exit status" table cell. */
+export function cliExitCell(cliExit, cliSignal = null) {
+  if (typeof cliExit === 'number') return `${cliExit} (${md(CLI.exit[cliExit] ?? 'not documented')})`;
+  return cliSignal ? `none: ended by ${signalName(cliSignal)}` : 'none';
+}
+
+// ---------------------------------------------------------------------------------------------
 // The job status
 // ---------------------------------------------------------------------------------------------
 
 /**
- * @param {{ failOn: 'none'|'must'|'any', cliExit: number|null, doc: object|null, plan?: object|null }} o
+ * @param {{ failOn: 'none'|'must'|'any', cliExit: number|null, cliSignal?: string|null, doc: object|null, plan?: object|null }} o
+ *   cliSignal: the signal that ended the CLI, when it has no exit status (cliExit null)
  *   plan: the run's plan.json, where there is one (mode full)
  * @returns {{ fail: boolean, reasons: string[], failing: object[] }}
  *
@@ -169,7 +193,7 @@ export function setupFacts(doc, plan) {
  *    some set-ups failed, the others were tested; the summary lists the failed ones, and fail-on decides.
  * 4. Otherwise fail-on decides, from the `violated` records alone. No other verdict fails a job.
  */
-export function decide({ failOn, cliExit, doc, plan = null }) {
+export function decide({ failOn, cliExit, cliSignal = null, doc, plan = null }) {
   const reasons = [];
   const facts = safetyFacts(doc);
   // why: these come first. They hold whether or not the run completed, and they are about the test
@@ -180,7 +204,7 @@ export function decide({ failOn, cliExit, doc, plan = null }) {
   // reports as complete with exit 0, every later check `not tested`; the unfinished clean-up is the signal.
   if (facts.cleanupFailed.length || facts.cleanupUnknown.length || facts.cleanupStopped) reasons.push(`The clean-up did not finish${facts.cleanupStopped ? ` (${md(facts.cleanupStopped)})` : ''}: objects of this run may still be in the test environment, and the next run against it is refused until \`mcp-writecheck cleanup\` has run. This fails the job whatever \`fail-on\` says.`);
   if (!CLI.exitRanToCompletion.includes(cliExit)) {
-    reasons.push(`mcp-writecheck exited with status ${cliExit} (${CLI.exit[cliExit] ?? 'not a status it documents'}). A run that did not complete fails the job whatever \`fail-on\` says.`);
+    reasons.push(`mcp-writecheck ${cliEndText(cliExit, cliSignal)}. A run that did not complete fails the job whatever \`fail-on\` says.`);
   }
   if (!doc) {
     if (!reasons.length) reasons.push('mcp-writecheck exited normally but wrote no results that this action could read.');
@@ -376,7 +400,7 @@ export function renderRun(o) {
   if (doc.manifest?.sha256) L.push(`| Manifest | sha256 ${code(doc.manifest.sha256)} |`);
   if (doc.target?.catalog_fingerprint) L.push(`| Catalog | ${code(doc.target.catalog_fingerprint)} |`);
   L.push(`| Mode, fail-on | ${mode}, ${md(o.failOn)} |`);
-  L.push(`| CLI exit status | ${o.cliExit} (${md(CLI.exit[o.cliExit] ?? 'not documented')}) |`);
+  L.push(`| CLI exit status | ${cliExitCell(o.cliExit, o.cliSignal)} |`);
   L.push(...memoryRow(o));
   L.push('');
   L.push(...statusLines(o.decision, o.failOn));
@@ -503,7 +527,7 @@ export function renderPlan(o) {
   L.push(`| Tester | ${md(o.cliVersion)} |`);
   L.push(`| Manifest | ${code(o.manifest)} |`);
   L.push(`| Plan hash | ${o.planHash ? code(o.planHash) : 'not printed'} |`);
-  L.push(`| CLI exit status | ${o.cliExit} (${md(CLI.exit[o.cliExit] ?? 'not documented')}) |`);
+  L.push(`| CLI exit status | ${cliExitCell(o.cliExit, o.cliSignal)} |`);
   L.push(...memoryRow(o));
   L.push('');
   if (o.decision.fail) L.push(`**Job status: failed.** ${o.decision.reasons.join(' ')}`);

@@ -28,7 +28,7 @@ import { join, resolve } from 'node:path';
 import { CLI, CLI_DEFAULT_REF, SPEC_DEFAULT_URL } from '../contract.mjs';
 import { ActionError, authHeaderValue, checkNode, obtainCli } from './install.mjs';
 import { memoryAttention, parseCeilingMb, startSampler } from './memory.mjs';
-import { decide, killsAttention, levelText, md, renderNoResults, renderPlan, renderRun, safetyFacts, unexpectedKills } from './summary.mjs';
+import { cliEndText, decide, killsAttention, levelText, md, renderNoResults, renderPlan, renderRun, safetyFacts, unexpectedKills } from './summary.mjs';
 
 const env = process.env;
 const inActions = env.GITHUB_ACTIONS === 'true';
@@ -140,7 +140,9 @@ function runCli(entry, args, { sample = false } = {}) {
       process.off('SIGINT', forward);
       process.off('SIGTERM', forward);
       if (inActions) log(`\n::${stop}::\n::endgroup::`);
-      const result = { code: error ? null : code ?? (signal === 'SIGINT' || signal === 'SIGTERM' ? 130 : null), out, error, memory: null };
+      const exit = error ? null : code ?? (signal === 'SIGINT' || signal === 'SIGTERM' ? 130 : null);
+      // why: a CLI ended by any other signal (SIGKILL from the out-of-memory killer or the runner) has no exit status; the summary names the signal.
+      const result = { code: exit, signal: exit === null && !error ? signal ?? null : null, out, error, memory: null };
       if (!sampler) return resolveRun(result);
       sampler
         .stop()
@@ -291,13 +293,13 @@ async function main() {
     if (r.error) throw new ActionError(`could not start mcp-writecheck: ${r.error.message}`);
     const hash = lastMatch(CLI.planHashLine, r.out)?.[1] ?? null;
     const reasons = [];
-    if (r.code !== 0) reasons.push(`mcp-writecheck plan exited with status ${r.code} (${CLI.exit[r.code] ?? 'not a status it documents'}).${i.catalog ? '' : ' Without the `catalog` input, plan starts the server for one `tools/list` request, so the server must be able to start in this job.'}`);
+    if (r.code !== 0) reasons.push(`mcp-writecheck plan ${cliEndText(r.code, r.signal)}.${i.catalog ? '' : ' Without the `catalog` input, plan starts the server for one `tools/list` request, so the server must be able to start in this job.'}`);
     else if (!hash) reasons.push('mcp-writecheck plan printed no plan hash that this action could read.');
     const decision = { fail: reasons.length > 0, reasons, failing: [] };
     const planDir = join(resultsRoot, 'plan');
     mkdirSync(planDir, { recursive: true });
     writeFileSync(join(planDir, 'plan.txt'), r.out);
-    writeSummary(renderPlan({ manifest: i.manifest, catalog: i.catalog || null, cliExit: r.code, planHash: hash, planText: r.code === 0 ? r.out : lastLines(r.out, 40), cliVersion: version, decision, memory: r.memory, ceilingMb: i.maxRssMb }));
+    writeSummary(renderPlan({ manifest: i.manifest, catalog: i.catalog || null, cliExit: r.code, cliSignal: r.signal, planHash: hash, planText: r.code === 0 ? r.out : lastLines(r.out, 40), cliVersion: version, decision, memory: r.memory, ceilingMb: i.maxRssMb }));
     annotateMemory(r.memory, i.maxRssMb);
     for (const why of reasons) annotate('error', why);
     setOutputs({ mode: 'plan', 'plan-hash': hash ?? '', 'results-path': planDir, 'cli-exit-code': r.code ?? '', 'exit-status': decision.fail ? 1 : 0 });
@@ -310,10 +312,10 @@ async function main() {
     if (r.error) throw new ActionError(`could not start mcp-writecheck: ${r.error.message}`);
     const runDir = findResultsDir(resultsRoot, before, r.out);
     const { doc, unreadable } = readResults(runDir);
-    const decision = decide({ failOn: i.failOn, cliExit: r.code, doc });
+    const decision = decide({ failOn: i.failOn, cliExit: r.code, cliSignal: r.signal, doc });
     if (unreadable) decision.reasons.push(unreadable);
-    if (doc) writeSummary(renderRun({ doc, specUrl: i.specUrl, failOn: i.failOn, cliExit: r.code, decision, cliVersion: version, artifactName: i.artifactName, mode: 'catalog', memory: r.memory, ceilingMb: i.maxRssMb }));
-    else writeSummary(renderNoResults({ cliExit: r.code, decision, lastLines: lastLines(r.out, 15), planHashGiven: '', planHashSeen: null, cliVersion: version, memory: r.memory, ceilingMb: i.maxRssMb }));
+    if (doc) writeSummary(renderRun({ doc, specUrl: i.specUrl, failOn: i.failOn, cliExit: r.code, cliSignal: r.signal, decision, cliVersion: version, artifactName: i.artifactName, mode: 'catalog', memory: r.memory, ceilingMb: i.maxRssMb }));
+    else writeSummary(renderNoResults({ cliExit: r.code, cliSignal: r.signal, decision, lastLines: lastLines(r.out, 15), planHashGiven: '', planHashSeen: null, cliVersion: version, memory: r.memory, ceilingMb: i.maxRssMb }));
     annotateRun(decision, doc);
     annotateMemory(r.memory, i.maxRssMb);
     setOutputs({ mode: 'catalog', 'plan-hash': '', 'results-path': runDir ?? '', 'cli-exit-code': r.code ?? '', 'exit-status': decision.fail ? 1 : 0 });
@@ -330,12 +332,12 @@ async function main() {
 
   const runDir = findResultsDir(resultsRoot, before, r.out);
   const { doc, unreadable } = readResults(runDir);
-  const decision = decide({ failOn: i.failOn, cliExit: r.code, doc, plan: readPlan(runDir) });
+  const decision = decide({ failOn: i.failOn, cliExit: r.code, cliSignal: r.signal, doc, plan: readPlan(runDir) });
   if (unreadable) decision.reasons.push(unreadable);
   const planHashSeen = doc?.plan?.hash ?? lastMatch(CLI.runPlanLine, r.out)?.[1] ?? '';
   const kills = readKills(runDir);
-  if (doc) writeSummary(renderRun({ doc, specUrl: i.specUrl, failOn: i.failOn, cliExit: r.code, decision, cliVersion: version, artifactName: i.artifactName, mode: 'full', memory: r.memory, ceilingMb: i.maxRssMb, kills }));
-  else writeSummary(renderNoResults({ cliExit: r.code, decision, lastLines: lastLines(r.out, 15), planHashGiven: i.planHash, planHashSeen: planHashSeen || null, cliVersion: version, memory: r.memory, ceilingMb: i.maxRssMb }));
+  if (doc) writeSummary(renderRun({ doc, specUrl: i.specUrl, failOn: i.failOn, cliExit: r.code, cliSignal: r.signal, decision, cliVersion: version, artifactName: i.artifactName, mode: 'full', memory: r.memory, ceilingMb: i.maxRssMb, kills }));
+  else writeSummary(renderNoResults({ cliExit: r.code, cliSignal: r.signal, decision, lastLines: lastLines(r.out, 15), planHashGiven: i.planHash, planHashSeen: planHashSeen || null, cliVersion: version, memory: r.memory, ceilingMb: i.maxRssMb }));
   annotateRun(decision, doc);
   annotateMemory(r.memory, i.maxRssMb);
   const killed = killsAttention(kills);
