@@ -36,6 +36,7 @@ jobs:
   plan:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -61,6 +62,9 @@ jobs:
   full:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    # A cancelled run (and a timeout is one) is stopped and cleaned up by the CLI; what it could not
+    # delete is in the artifact's state folder. Set this above your longest run.
+    timeout-minutes: 30
     # One run at a time against one test environment: two runs would be each other's second writer.
     concurrency:
       group: mcp-writecheck-test-environment
@@ -76,9 +80,10 @@ jobs:
           node-version: 22
       - name: Build the server
         run: npm ci && npm run build
+      # The backend gets its own memory limit, so that it, and not the runner, is what runs out.
       - name: Start the test backend # REPLACE 2
         run: |
-          docker run --detach --name test-backend --publish 127.0.0.1:4100:4100 \
+          docker run --detach --name test-backend --memory 1g --publish 127.0.0.1:4100:4100 \
             --env API_TOKEN ghcr.io/your-org/your-backend:test
       - uses: isokron-ai/mcp-writecheck-action@0000000000000000000000000000000000000000 # REPLACE 1
         with:
@@ -87,3 +92,15 @@ jobs:
           fail-on: must
           confirm-target: staging-tracker.internal # REPLACE 3
           plan-hash: 0123456789abcdef # REPLACE 4
+          # Optional: a peak at or above this is shown under "Needs attention"; it never fails the job.
+          max-rss-mb: 4096
+      # A backend that was killed part-way, or restarted empty, makes the results describe that and
+      # not the server. This step fails the job if the backend is not running or was killed for memory.
+      - name: Check the test backend after the run
+        if: ${{ always() }}
+        run: |
+          out=$(docker inspect --format '{{.State.Running}} {{.State.OOMKilled}} {{.State.ExitCode}}' test-backend) \
+            || { echo "test backend: container not found"; exit 1; }
+          read -r running oom code <<< "$out"
+          echo "test backend: running=$running oom_killed=$oom exit_code=$code"
+          if [ "$running" != true ] || [ "$oom" != false ]; then exit 1; fi
