@@ -122,6 +122,14 @@ export const CLI = {
    * results' `plan.hash`. `catalog` writes none. The action reads `hash` and `plan.resources[].setup` (SETUP, below).
    */
   planFile: 'plan.json',
+  /**
+   * `run` writes every call and process event to <out>/<run id>/capture/capture.jsonl (format mws-capture/1),
+   * one JSON object per line. The action reads only process `exit` events: { type: 'wire', dir: 'event',
+   * channel: 'process', event: 'exit', label, exit_code, signal, stop_sent }. `stop_sent` (whether the tester
+   * had sent that server SIGTERM or SIGKILL) is written by CLIs with the stop_sent change, not by the commit
+   * CLI_DEFAULT_REF names; without it the action reports nothing from the capture.
+   */
+  captureFile: 'capture/capture.jsonl',
 };
 
 /**

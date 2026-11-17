@@ -28,7 +28,7 @@ import { join, resolve } from 'node:path';
 import { CLI, CLI_DEFAULT_REF, SPEC_DEFAULT_URL } from '../contract.mjs';
 import { ActionError, authHeaderValue, checkNode, obtainCli } from './install.mjs';
 import { memoryAttention, parseCeilingMb, startSampler } from './memory.mjs';
-import { decide, levelText, md, renderNoResults, renderPlan, renderRun, safetyFacts } from './summary.mjs';
+import { decide, killsAttention, levelText, md, renderNoResults, renderPlan, renderRun, safetyFacts, unexpectedKills } from './summary.mjs';
 
 const env = process.env;
 const inActions = env.GITHUB_ACTIONS === 'true';
@@ -191,6 +191,21 @@ function readPlan(runDir) {
   }
 }
 
+/**
+ * Server processes killed by a SIGKILL the tester did not send, from the run's capture. Any problem reading
+ * it (no capture, too large, unreadable) gives none: this is a "Needs attention" line, never a job status.
+ */
+function readKills(runDir) {
+  if (!runDir) return [];
+  try {
+    const file = join(runDir, CLI.captureFile);
+    if (!existsSync(file) || statSync(file).size > 512 * 1024 * 1024) return [];
+    return unexpectedKills(readFileSync(file, 'utf8'));
+  } catch {
+    return [];
+  }
+}
+
 /** Error and warning lines for the job's annotations, from the decision and the safety facts. */
 function annotateRun(decision, doc) {
   if (decision.fail) for (const why of decision.reasons) annotate('error', plain(why));
@@ -318,10 +333,13 @@ async function main() {
   const decision = decide({ failOn: i.failOn, cliExit: r.code, doc, plan: readPlan(runDir) });
   if (unreadable) decision.reasons.push(unreadable);
   const planHashSeen = doc?.plan?.hash ?? lastMatch(CLI.runPlanLine, r.out)?.[1] ?? '';
-  if (doc) writeSummary(renderRun({ doc, specUrl: i.specUrl, failOn: i.failOn, cliExit: r.code, decision, cliVersion: version, artifactName: i.artifactName, mode: 'full', memory: r.memory, ceilingMb: i.maxRssMb }));
+  const kills = readKills(runDir);
+  if (doc) writeSummary(renderRun({ doc, specUrl: i.specUrl, failOn: i.failOn, cliExit: r.code, decision, cliVersion: version, artifactName: i.artifactName, mode: 'full', memory: r.memory, ceilingMb: i.maxRssMb, kills }));
   else writeSummary(renderNoResults({ cliExit: r.code, decision, lastLines: lastLines(r.out, 15), planHashGiven: i.planHash, planHashSeen: planHashSeen || null, cliVersion: version, memory: r.memory, ceilingMb: i.maxRssMb }));
   annotateRun(decision, doc);
   annotateMemory(r.memory, i.maxRssMb);
+  const killed = killsAttention(kills);
+  if (killed) annotate('warning', plain(killed));
   setOutputs({ mode: 'full', 'plan-hash': planHashSeen, 'results-path': runDir ?? '', 'cli-exit-code': r.code ?? '', 'exit-status': decision.fail ? 1 : 0 });
 }
 

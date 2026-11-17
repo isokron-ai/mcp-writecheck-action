@@ -307,6 +307,37 @@ function safetySections(doc, facts, extraWarn = []) {
   return L;
 }
 
+/**
+ * Server processes that ended by SIGKILL the tester did not send, from the run's capture (CLI.captureFile).
+ * The supervisor reports a server killed by a signal as 128 + its number, so SIGKILL is 137; a supervisor
+ * killed itself shows the signal. Only events with `stop_sent: false` count: a CLI that does not record
+ * the field gives nothing, never a guess. Lines that do not parse are skipped.
+ * @param {string} text the capture file
+ * @returns {{ label: string, exit_code: number|null, signal: string|null }[]}
+ */
+export function unexpectedKills(text) {
+  const out = [];
+  for (const line of String(text ?? '').split('\n')) {
+    if (!line.includes('"stop_sent":false')) continue;
+    let e;
+    try {
+      e = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (e?.channel !== 'process' || e.event !== 'exit' || e.stop_sent !== false) continue;
+    if (e.exit_code === 137 || e.signal === 'SIGKILL') out.push({ label: String(e.label ?? '?'), exit_code: typeof e.exit_code === 'number' ? e.exit_code : null, signal: typeof e.signal === 'string' ? e.signal : null });
+  }
+  return out;
+}
+
+/** The "Needs attention" line for unexpectedKills(), or null. Never a reason to fail the job. */
+export function killsAttention(kills) {
+  if (!kills?.length) return null;
+  const labels = uniq(kills.map((k) => k.label));
+  return `${kills.length === 1 ? 'A server process' : `${kills.length} server processes`} (${labels.map(code).join(', ')}) ended by SIGKILL that the tester did not send. Most often that is the system's out-of-memory killer. Records from calls around that point may describe the kill rather than the server; check the runner's memory (the peak above, and "Time and memory" in the action's README). The job status does not depend on this.`;
+}
+
 /** The table row for the sampled peak memory (src/memory.mjs), when the caller measured it. */
 function memoryRow(o) {
   return o.memory === undefined ? [] : [`| Peak memory | ${memoryCell(o.memory)} |`];
@@ -314,8 +345,7 @@ function memoryRow(o) {
 
 /** "Needs attention" lines from the memory measurement. They never enter decide(). */
 function memoryWarn(o) {
-  const line = memoryAttention(o.memory, o.ceilingMb ?? null);
-  return line ? [line] : [];
+  return [memoryAttention(o.memory, o.ceilingMb ?? null), killsAttention(o.kills)].filter(Boolean);
 }
 
 function attentionSection(warn) {
@@ -324,8 +354,9 @@ function attentionSection(warn) {
 }
 
 /**
- * @param {{ doc: object, specUrl: string, failOn: string, cliExit: number, decision: object, cliVersion: string, artifactName: string, mode?: 'full'|'catalog', maxBytes?: number, memory?: object|null, ceilingMb?: number|null }} o
- *   memory: the sampled peak (src/memory.mjs), shown as a row; ceilingMb: `max-rss-mb`. Neither affects the job status.
+ * @param {{ doc: object, specUrl: string, failOn: string, cliExit: number, decision: object, cliVersion: string, artifactName: string, mode?: 'full'|'catalog', maxBytes?: number, memory?: object|null, ceilingMb?: number|null, kills?: object[] }} o
+ *   memory: the sampled peak (src/memory.mjs), shown as a row; ceilingMb: `max-rss-mb`; kills: unexpectedKills() of the
+ *   run's capture. None of them affects the job status.
  */
 export function renderRun(o) {
   const { doc, specUrl } = o;
