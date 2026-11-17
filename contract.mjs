@@ -18,12 +18,13 @@
 // ---------------------------------------------------------------------------------------------
 
 /**
- * Commit 7b95215 of the public isokron-ai/mcp-write-safety (16 Nov 2026): MWS 0.9, the public draft,
- * with mcp-writecheck 0.1.0 (published to npm as @mcp-write-safety/writecheck); 37 requirements. A full
+ * Commit 3af41c6 of the public isokron-ai/mcp-write-safety (16 Nov 2026): MWS 0.9, the public draft, and
+ * mcp-writecheck 0.1.0 (npm @mcp-write-safety/writecheck) plus the capture's stop_sent field (PR #1); the spec
+ * and tiny-tracker are unchanged since 7b95215; 37 requirements. A full
  * SHA is needed: `git fetch` does not take a short one. SHAs cited elsewhere in this repository from
  * before 16 Nov 2026 refer to the private pre-publication history and do not resolve publicly.
  */
-export const CLI_DEFAULT_REF = '7b952151dddd84260d057cdb506081820003fe56';
+export const CLI_DEFAULT_REF = '3af41c6fb79d66afdea41ebcabc6f7fc18e77c6a';
 
 /**
  * How the CLI is obtained when the caller gives no `cli-path`.
@@ -126,8 +127,8 @@ export const CLI = {
    * `run` writes every call and process event to <out>/<run id>/capture/capture.jsonl (format mws-capture/1),
    * one JSON object per line. The action reads only process `exit` events: { type: 'wire', dir: 'event',
    * channel: 'process', event: 'exit', label, exit_code, signal, stop_sent }. `stop_sent` (whether the tester
-   * had sent that server SIGTERM or SIGKILL) is written by CLIs with the stop_sent change, not by the commit
-   * CLI_DEFAULT_REF names; without it the action reports nothing from the capture.
+   * had sent that server SIGTERM or SIGKILL) is written by CLIs with the stop_sent change (CLI_DEFAULT_REF has it,
+   * from 3af41c6); with an older cli-ref the action reports nothing from the capture.
    */
   captureFile: 'capture/capture.jsonl',
 };

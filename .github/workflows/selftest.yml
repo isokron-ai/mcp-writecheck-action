@@ -23,8 +23,9 @@ concurrency:
 
 env:
   # The commits the action is tested against: the CLI (contract.mjs CLI_DEFAULT_REF), tiny-tracker
-  # and the spec. One public commit of isokron-ai/mcp-write-safety (MWS 0.9) holds all three.
-  CLI_REF: 7b952151dddd84260d057cdb506081820003fe56
+  # and the spec, all in the public isokron-ai/mcp-write-safety (MWS 0.9). The CLI is at 3af41c6 (stop_sent);
+  # tiny-tracker and the spec are unchanged since 7b95215.
+  CLI_REF: 3af41c6fb79d66afdea41ebcabc6f7fc18e77c6a
   TINY_TRACKER_REF: 7b952151dddd84260d057cdb506081820003fe56
   SPEC_REF: 7b952151dddd84260d057cdb506081820003fe56
 
