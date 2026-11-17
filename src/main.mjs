@@ -68,7 +68,9 @@ function readInputs() {
   try {
     i.maxRssMb = parseCeilingMb(i.maxRssMb);
   } catch (e) {
-    throw new ActionError(e.message);
+    // why: memory never changes the job status (owner, 16 Nov), so a bad ceiling is a warning and the run goes on without one.
+    annotate('warning', `${e.message} The run goes on without a memory ceiling.`);
+    i.maxRssMb = null;
   }
   if (!['none', 'must', 'any'].includes(i.failOn)) throw new ActionError(`fail-on: ${JSON.stringify(i.failOn)} is not one of none, must, any.`);
   let url;
@@ -195,13 +197,14 @@ function readPlan(runDir) {
 
 /**
  * Server processes killed by a SIGKILL the tester did not send, from the run's capture. Any problem reading
- * it (no capture, too large, unreadable) gives none: this is a "Needs attention" line, never a job status.
+ * it (no capture, over 64 MiB, unreadable) gives none: this is a "Needs attention" line, never a job status.
  */
 function readKills(runDir) {
   if (!runDir) return [];
   try {
     const file = join(runDir, CLI.captureFile);
-    if (!existsSync(file) || statSync(file).size > 512 * 1024 * 1024) return [];
+    // why: the whole file is read into memory; on a runner already short of memory a large capture must not be what kills the action.
+    if (!existsSync(file) || statSync(file).size > 64 * 1024 * 1024) return [];
     return unexpectedKills(readFileSync(file, 'utf8'));
   } catch {
     return [];

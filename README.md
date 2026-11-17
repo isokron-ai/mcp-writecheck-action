@@ -69,7 +69,7 @@ The manifest is the file `mcp-writecheck init` drafts and you complete. The CLI'
 | `spec-url` | `https://isokron.ai/mws` | Base URL of the public spec page. A requirement links to `<spec-url>#<id in lower case>`, for example `https://isokron.ai/mws#mws-conc-2`. |
 | `results-dir` | `mwsc-results` | Folder the results are written to and the artifact is made from, relative to the workspace. |
 | `artifact-name` | `mcp-writecheck-results` | Name of the artifact. Give each job of a matrix its own. |
-| `max-rss-mb` | | Optional. A memory ceiling in MB (1 MB = 1024 KiB) for the CLI and the processes under it. A peak that reaches it is shown under "Needs attention"; it never changes the job status. See [Time and memory](#time-and-memory).
+| `max-rss-mb` | | Optional. A memory ceiling in MB (1 MB = 1024 KiB) for the CLI and the processes under it. A peak that reaches it is shown under "Needs attention"; it never changes the job status, and a value that is not a whole number of MB gives a warning and no ceiling. See [Time and memory](#time-and-memory). |
 | `cli-path` | | Folder of an `mcp-writecheck` package that is already built. When set, nothing is fetched and `cli-ref` is not used. |
 | `cli-token` | | Not needed: the `mcp-writecheck` repository is public. Kept, optional and unset by default, so that workflows that still pass it keep working; it will be removed in a later version. If given, only the step that fetches the CLI gets it; it goes to git as an HTTP header for the fetch alone (never in a URL or on a command line), and it is masked in the log. |
 
@@ -139,11 +139,11 @@ While the CLI runs, the action samples the memory of the CLI and every process u
 
 | Runner | How | Shown as |
 |---|---|---|
-| Linux | every second from `/proc`: the sum of the resident memory of the tree, and each process's own peak | exact (a spike shorter than a second can fall between two readings) |
+| Linux | every second from `/proc`: the sum of the resident memory of the tree, and each process's own peak | exact readings (a spike shorter than a second can fall between two; memory shared between processes is counted once for each, so the sum can read higher than what is in use) |
 | macOS | every two seconds from `ps` | approximate |
 | Windows | | not measured |
 
-With `max-rss-mb`, a peak that reaches the ceiling gets a line under "Needs attention" and a warning annotation. In mode `full`, a server process that ended by SIGKILL the CLI did not send (most often the system's out-of-memory killer) gets one too; the action reads this from the run's capture, where CLI releases that record `stop_sent` on a server's exit write it (the CLI at the pinned commit does not, and then nothing is shown). None of this changes the job status, and an error while sampling only makes the figure "not measured". A backend the job starts itself is not under the CLI, so it is not in the figure. In the workflow:
+With `max-rss-mb`, a peak that reaches the ceiling gets a line under "Needs attention" and a warning annotation. In mode `full`, a server process that ended by SIGKILL the CLI did not send (most often the system's out-of-memory killer) gets one too; the action reads this from the run's capture, where CLI releases that record `stop_sent` on a server's exit write it (the CLI at the pinned commit does not, and then nothing is shown). None of this changes the job status, and an error while sampling only makes the figure "not measured". A backend the job starts itself is not under the CLI, so it is not in the figure; nor is a server whose command starts a container (`docker run …`), where only the `docker` client is under the CLI, or a process that detaches from the tree. In the workflow:
 
 - **Set `timeout-minutes` on the job.** Without it a job can run for six hours. When the timeout cancels the job, the action forwards the cancellation to the CLI, which stops the run and cleans up as for any cancellation, within the runner's grace period before it kills the job; what it could not delete is in the artifact's `state/` folder (see [`full` mode](#full-real-writes-test-environment-required)).
 - **Know your runner's memory limit.** GitHub lists the memory of its hosted runners under [Supported runners and hardware resources](https://docs.github.com/en/actions/reference/runners/github-hosted-runners); a self-hosted runner has what its machine or container gives it. The CLI, the server under test, a backend the job starts and the runner itself share that memory, and when it runs out the system kills one of them.
