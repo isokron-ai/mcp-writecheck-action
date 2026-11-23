@@ -1,3 +1,6 @@
+# T0 worker: dispatch only (no schedule, push or pull_request). Comments below that say nightly or automatic
+# describe the earlier setup; see the README section "T0 workers".
+#
 # Dogfood: this action against IsoKron's research build of the Payload MCP plugin, every night and
 # on demand.
 #
@@ -27,9 +30,28 @@
 
 name: "dogfood: payload"
 
+run-name: shard ${{ inputs.shard_id }}
+
 on:
+  # Dispatch only: a T0 worker. There is no schedule, push or pull_request trigger.
   workflow_dispatch:
     inputs:
+      shard_id:
+        description: T0 shard id (letters, digits, dot, underscore, hyphen; at most 64).
+        required: true
+        type: string
+      attempt_id:
+        description: Attempt id (same character set). Names the manifest artifact t0-<attempt_id>.
+        required: true
+        type: string
+      fence:
+        description: Fence token (letters, digits, dot, colon, underscore, hyphen; at most 64).
+        required: true
+        type: string
+      run_key:
+        description: Run key (same character set as fence).
+        required: true
+        type: string
       cli-ref:
         description: mcp-writecheck commit to test with (full 40-character SHA). Empty for the action's default.
         required: false
@@ -38,19 +60,11 @@ on:
         description: "Accepted plan hashes for that CLI, after reading the plans: space-separated job=hash pairs (job names as in this file)."
         required: false
         default: ''
-  schedule:
-    - cron: '7 4 * * *'
-  pull_request:
-    paths: ['dogfood/payload/**', 'dogfood/*.sh', '.github/workflows/dogfood-payload.yml', 'action.yml', 'contract.mjs', 'src/**']
-  push:
-    branches: [main]
-    paths: ['dogfood/payload/**', 'dogfood/*.sh', '.github/workflows/dogfood-payload.yml', 'action.yml', 'contract.mjs', 'src/**']
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
-  group: dogfood-payload-${{ github.ref }}
+  group: dogfood-payload-${{ github.ref }}-${{ inputs.shard_id }}-${{ inputs.attempt_id }}
   cancel-in-progress: false
 
 env:
@@ -61,8 +75,51 @@ env:
   PAYLOAD_URL: http://127.0.0.1:4960
 
 jobs:
+  t0-start:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      go: ${{ steps.guard.outputs.go }}
+      attempt_id: ${{ steps.guard.outputs.attempt_id }}
+      fence: ${{ steps.guard.outputs.fence }}
+      run_key: ${{ steps.guard.outputs.run_key }}
+    steps:
+      - id: guard
+        name: Kill switch, then validate the inputs
+        env:
+          LOOP_ENABLED: ${{ vars.LOOP_ENABLED }}
+          IN_SHARD_ID: ${{ inputs.shard_id }}
+          IN_ATTEMPT_ID: ${{ inputs.attempt_id }}
+          IN_FENCE: ${{ inputs.fence }}
+          IN_RUN_KEY: ${{ inputs.run_key }}
+        run: |
+          if [ "$LOOP_ENABLED" != "true" ]; then
+            echo "::notice::LOOP_ENABLED is not 'true'; this T0 worker does nothing."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          bad=0
+          check() { # name value pattern
+            if ! printf '%s' "$2" | grep -Eq "$3"; then echo "::error::input $1 is empty or has a character outside its allowed set"; bad=1; fi
+          }
+          check shard_id "$IN_SHARD_ID" '^[A-Za-z0-9._-]{1,64}$'
+          check attempt_id "$IN_ATTEMPT_ID" '^[A-Za-z0-9._-]{1,64}$'
+          check fence "$IN_FENCE" '^[A-Za-z0-9._:-]{1,64}$'
+          check run_key "$IN_RUN_KEY" '^[A-Za-z0-9._:-]{1,64}$'
+          [ "$bad" -eq 0 ] || exit 1
+          {
+            echo "go=true"
+            echo "attempt_id=$IN_ATTEMPT_ID"
+            echo "fence=$IN_FENCE"
+            echo "run_key=$IN_RUN_KEY"
+          } >> "$GITHUB_OUTPUT"
+
   research:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    needs: t0-start
+    permissions:
+      contents: read
+    if: needs.t0-start.outputs.go == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -158,7 +215,10 @@ jobs:
         run: dogfood/payload/stack.sh stop
 
   research-shim:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    needs: t0-start
+    permissions:
+      contents: read
+    if: needs.t0-start.outputs.go == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -256,6 +316,9 @@ jobs:
         run: dogfood/payload/stack.sh stop
 
   vendor:
+    needs: t0-start
+    permissions:
+      contents: read
     # DISABLED: needs the owner's go. This repository's logs and job summaries are public, and the
     # upstream build's results would publish findings that have not all been reported upstream.
     if: false
@@ -340,3 +403,30 @@ jobs:
       - name: Stop the app
         if: always()
         run: dogfood/payload/stack.sh stop
+
+  t0-manifest:
+    needs: [t0-start, research, research-shim, vendor]
+    if: ${{ always() && needs.t0-start.outputs.go == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Write the manifest stub
+        env:
+          ATTEMPT_ID: ${{ needs.t0-start.outputs.attempt_id }}
+          FENCE: ${{ needs.t0-start.outputs.fence }}
+          RUN_KEY: ${{ needs.t0-start.outputs.run_key }}
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          conclusion=success
+          for r in $RESULTS; do
+            case "$r" in failure) conclusion=failure ;; cancelled) [ "$conclusion" = failure ] || conclusion=cancelled ;; esac
+          done
+          CONCLUSION="$conclusion" node -e 'require("fs").writeFileSync("t0-manifest.json", JSON.stringify({ attempt_id: process.env.ATTEMPT_ID, fence: process.env.FENCE, run_key: process.env.RUN_KEY, conclusion: process.env.CONCLUSION }, null, 2) + "\n")'
+          cat t0-manifest.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: t0-${{ needs.t0-start.outputs.attempt_id }}
+          path: t0-manifest.json
+          if-no-files-found: error
+          retention-days: 3
