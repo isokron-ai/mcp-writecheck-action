@@ -101,7 +101,8 @@ jobs:
           fi
           bad=0
           check() { # name value pattern
-            if ! printf '%s' "$2" | grep -Eq "$3"; then echo "::error::input $1 is empty or has a character outside its allowed set"; bad=1; fi
+            # [[ =~ ]] matches the whole string, so a value with a newline is refused (grep matched line by line).
+            if ! [[ "$2" =~ $3 ]]; then echo "::error::input $1 is empty or has a character outside its allowed set"; bad=1; fi
           }
           check shard_id "$IN_SHARD_ID" '^[A-Za-z0-9._-]{1,64}$'
           check attempt_id "$IN_ATTEMPT_ID" '^[A-Za-z0-9._-]{1,64}$'

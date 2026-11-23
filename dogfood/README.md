@@ -19,17 +19,19 @@ it (`plan-hashes`, `job=hash` pairs).
 
 Rules every dogfood workflow follows:
 
-- Triggers: `workflow_dispatch`, a nightly `schedule`, and `pull_request` and `push` to `main` on
-  each workflow's own paths (writesafe: nightly and on demand only, see below). Never `pull_request_target`. A pull request from a fork
-  runs no job (each job's `if:` checks that the head is this repository). Standard GitHub-hosted
-  runners only, never self-hosted.
+- Triggers: `workflow_dispatch` only, since 23 Nov 2026. These workflows are T0 workers of the tool-qa loop:
+  the loop dispatches them with `shard_id`, `attempt_id`, `fence` and `run_key`, and each one checks this repository's
+  `LOOP_ENABLED` variable first (anything but `true` skips every job, green). There is no schedule, `push` or
+  `pull_request` trigger, so a change to `action.yml` or `src/` is exercised against real servers when the loop next
+  dispatches these, not on the pull request; `test.yml` still runs the unit tests on every push and pull request.
+  Never `pull_request_target`. Standard GitHub-hosted runners only, never self-hosted.
 - `permissions: contents: read`; third-party actions pinned by full commit SHA; `timeout-minutes`
   on every job; checkouts with `persist-credentials: false`.
 - No secret. The CLI's repository, `isokron-ai/mcp-write-safety`, is public (16 Nov 2026), so no
   checkout or fetch needs a token. Workflows that install or start third-party code (a server's npm
   or Go tree) check the CLI out in one step that runs first, build it there (`dogfood/cli-ref.sh`,
   `dogfood/build-cli.sh`) and give the action `cli-path`. writesafe, whose server installs an
-  unlocked dependency tree, runs nightly and on demand only (no pull_request or push trigger). Every backend credential is generated
+  unlocked dependency tree, runs on dispatch only, like the others. Every backend credential is generated
   inside the job, checked and masked.
 - Full mode only against a backend started inside the job. The plan hash is pinned in the workflow
   after a person has read the plan; when the plan changes, the full run is refused and the
