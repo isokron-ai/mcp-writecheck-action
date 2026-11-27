@@ -587,7 +587,7 @@ test('R-WC-26: an install failure is the subject\'s only with a package-level er
 });
 
 test('R-WC-30: an entry step failure is the subject\'s only when the package declares nothing to run; every other entry answer is ours', () => {
-  // The helper's answers (msc sandbox/npm-entry.mjs at 4504c0b), as codes.
+  // The helper's answers (msc sandbox/npm-entry.mjs at 78a7834), as codes.
   assert.equal(entryErrorCode({ error: 'the package declares no bin' }, 1), 'declares_no_bin');
   assert.equal(entryErrorCode({ error: 'the package has no bin of that name' }, 1), 'no_bin_of_that_name');
   assert.equal(entryErrorCode({ error: 'the installed package has no readable package.json: ENOENT' }, 1), 'entry_failed');
