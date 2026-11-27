@@ -187,9 +187,10 @@ test('R-WC-34: a crate builds with its own lockfile in the pinned Rust image, th
   assert.deepEqual(cargoPlan({ kind: 'cargo', crate: 'x', version: '1.2.3' }).install[0].cmd, ['cargo', 'install', '--locked', '--root', '/work/pkg', '--version', '1.2.3', '--', 'x']);
   for (const bad of ['--git=https://example.invalid/x', 'a b', '../x', '', 'x'.repeat(65)]) assert.throws(() => cargoPlan({ kind: 'cargo', crate: bad, version: 'latest' }), bad);
   assert.throws(() => cargoPlan({ kind: 'cargo', crate: 'x', version: '--path=/' }));
-  // The Rust image is ours, pinned by its index digest, and takes no key of the sandbox's own images.
+  // The Rust image is the sandbox's own (rust-build in its images.json since 4504c0b), pinned by its index digest; ours takes no key of the sandbox's.
   const imgs = loadImages();
-  assert.match(imgs['rust-build'], /^docker\.io\/library\/rust:1\.\d+\.\d+-bookworm@sha256:[0-9a-f]{64}$/);
+  if (process.env.MSC_DIR) assert.match(JSON.parse(readFileSync(join(process.env.MSC_DIR, 'images.json'), 'utf8'))['rust-build'], /^docker\.io\/library\/rust:1\.\d+\.\d+-bookworm@sha256:[0-9a-f]{64}$/);
+  assert.ok(!Object.hasOwn(imgs, 'rust-build'), 'the sandbox names rust-build; a second entry of ours would stop the harness');
   if (process.env.MSC_DIR) for (const k of Object.keys(imgs)) assert.ok(!Object.hasOwn(JSON.parse(readFileSync(join(process.env.MSC_DIR, 'images.json'), 'utf8')), k), k);
   else for (const k of Object.keys(imgs)) assert.ok(!['node24', 'node22', 'node24-build', 'node22-build', 'python', 'go'].includes(k), k);
   const dir = mkdtempSync(join(tmpdir(), 'wc-images-'));
