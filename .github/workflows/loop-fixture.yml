@@ -37,7 +37,7 @@ env:
   SANDBOX_REF: '78a7834cf028507b03e90e266b87bebeacfccd51'
   # isokron-ai/mcp-check at the commit tool-qa's live-probe lane runs (pump/workflows.json, live-probe versions.tool): its
   # resolver chooses an OCI subject's image for this lane too (loop/launch.mjs, WC14), so both lanes run the same image.
-  MCP_CHECK_REF: 'fcc0d2e65ce45b6dd31c03680239defcd405faae'
+  MCP_CHECK_REF: 'dbfea01367f58c500c781048d0cfb480796ae005'
 
 jobs:
   conformance:
