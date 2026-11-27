@@ -303,16 +303,18 @@ jobs:
     if: ${{ always() && needs.t0-start.outputs.go == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    # Runs none of the workflow's code: it only reads the jobs' results and builds the sealed bundle.
+    # Runs none of the workflow's code: it only reads the jobs' results (and, for a failed run, which steps failed) and builds the sealed bundle.
     permissions:
       contents: read
+      actions: read # the failed steps of this run, to tell infrastructure from our tool
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Build the result bundle
         env:
-          RESULTS: ${{ join(needs.*.result, ' ') }}
+          NEEDS: ${{ toJSON(needs) }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           mkdir -p "$RUNNER_TEMP/out"
           node loop/t0-bundle.mjs --out "$RUNNER_TEMP/out"
