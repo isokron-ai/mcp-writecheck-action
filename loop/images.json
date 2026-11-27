@@ -1,4 +1,3 @@
 {
-  "about": "Images of this lane beside mcp-surface-corpus's own (its images.json), pinned by the digest of the multi-platform index. rust-build: the Rust toolchain (rust:1.99.1-bookworm, the full Debian 12 image: cc, make, pkg-config and the OpenSSL headers a crate's build script may need) for `cargo install` of a crate (loop/launch.mjs cargoPlan); the server then runs in the same image, which has the libraries it linked against. Recorded 25 Nov 2026 (1.99.1 published 6 Nov 2026); change only by a reviewed commit.",
-  "rust-build": "docker.io/library/rust:1.99.1-bookworm@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c"
+  "about": "Images of this lane beside mcp-surface-corpus's own (its images.json), pinned by the digest of the multi-platform index. None now: the Rust toolchain (rust-build, rust:1.99.1-bookworm, recorded 25 Nov 2026) became the sandbox's own image key at mcp-surface-corpus 4504c0b (same digest), and loadImages refuses a key of ours that the sandbox also names. A new image of ours goes here only by a reviewed commit."
 }

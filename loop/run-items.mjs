@@ -203,12 +203,12 @@ export class Shard {
     // Docker's data root, for the room an OCI subject's image needs (R-WC-38).
     const root = (await this.dk.d(['info', '--format', '{{.DockerRootDir}}'], { keepStdout: true, logStdout: false })).stdout.toString().trim();
     this.dockerRoot = /^\/[A-Za-z0-9._/-]{1,200}$/.test(root) ? root : null;
-    // Our own images (loop/images.json: the Rust toolchain for crates, WC14) beside the sandbox's; a key of ours never
+    // Our own images (loop/images.json, none at the moment: the Rust toolchain for crates, WC14, is the sandbox's own rust-build since 4504c0b) beside the sandbox's; a key of ours never
     // replaces one of mcp-surface-corpus's.
     const ours = loadImages();
     for (const k of Object.keys(ours)) if (Object.hasOwn(this.M.images, k)) throw new this.M.HarnessError(`loop/images.json names ${k}, an image key of mcp-surface-corpus`);
     this.images = { ...this.M.images, ...ours };
-    for (const k of ['node24', 'node22', 'node24-build', 'node22-build', 'python', ...Object.keys(ours)]) this.M.checkPinned(this.images[k], k);
+    for (const k of ['node24', 'node22', 'node24-build', 'node22-build', 'python', 'rust-build', ...Object.keys(ours)]) this.M.checkPinned(this.images[k], k);
     await this.dk.image(this.images.node24, 'node24');
   }
 
