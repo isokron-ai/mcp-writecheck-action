@@ -34,7 +34,7 @@ on:
         required: true
         type: string
       attempt_id:
-        description: Attempt id (same character set). Names the manifest artifact t0-<attempt_id>.
+        description: Attempt id (same character set). Names the result artifact result-<attempt_id>-0.tar.age.
         required: true
         type: string
       fence:
@@ -302,25 +302,25 @@ jobs:
     needs: [t0-start, research, vendor]
     if: ${{ always() && needs.t0-start.outputs.go == 'true' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions: {}
+    timeout-minutes: 10
+    # Runs none of the workflow's code: it only reads the jobs' results and builds the sealed bundle.
+    permissions:
+      contents: read
     steps:
-      - name: Write the manifest stub
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the result bundle
         env:
-          ATTEMPT_ID: ${{ needs.t0-start.outputs.attempt_id }}
-          FENCE: ${{ needs.t0-start.outputs.fence }}
-          RUN_KEY: ${{ needs.t0-start.outputs.run_key }}
           RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |
-          conclusion=success
-          for r in $RESULTS; do
-            case "$r" in failure) conclusion=failure ;; cancelled) [ "$conclusion" = failure ] || conclusion=cancelled ;; esac
-          done
-          CONCLUSION="$conclusion" node -e 'require("fs").writeFileSync("t0-manifest.json", JSON.stringify({ attempt_id: process.env.ATTEMPT_ID, fence: process.env.FENCE, run_key: process.env.RUN_KEY, conclusion: process.env.CONCLUSION }, null, 2) + "\n")'
-          cat t0-manifest.json
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+          mkdir -p "$RUNNER_TEMP/out"
+          node loop/t0-bundle.mjs --out "$RUNNER_TEMP/out"
+      - uses: isokron-ai/tool-qa/worker-kit@b04b7c65c244de48c32f93c7ea9b9ac933ca1efe # tool-qa main, 27 Nov 2026 (T0_WORKER_KIT_REF)
         with:
-          name: t0-${{ needs.t0-start.outputs.attempt_id }}
-          path: t0-manifest.json
-          if-no-files-found: error
-          retention-days: 3
+          bundle-dir: ${{ runner.temp }}/out/bundle
+          meta-file: ${{ runner.temp }}/out/meta.json
+          attempt-id: ${{ needs.t0-start.outputs.attempt_id }}
+          item-index: 0
+          fence: ${{ needs.t0-start.outputs.fence }}
+          run-key: ${{ needs.t0-start.outputs.run_key }}
