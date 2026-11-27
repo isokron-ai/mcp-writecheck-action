@@ -735,8 +735,19 @@ test('R-WC-40: a stage counts as run only when its step ended with a status that
   assert.deepEqual(run('', [{ step: 'init', exit: 0 }, { step: 'plan', exit: 0 }, { step: 'catalog', exit: 1 }]).skips.map((x) => `${x.stage}:${x.fault}`), ['full:policy']);
   // A fixture's setup that failed leaves init, plan and catalog never started: ours too.
   assert.deepEqual(run('', [{ step: 'setup-0', exit: 1 }]).skips.filter((x) => x.stage !== 'full').map((x) => `${x.reason}:${x.fault}`), ['tool_error:tool', 'tool_error:tool', 'tool_error:tool']);
+  // A fixture (full write test allowed under its accepted hash) whose plan failed: the full stage is ours too, not policy.
+  const fixture = itemSkips({ resolved: {}, res: { error: null, install: { ok: true }, steps: FAILED_STEPS, fullRan: false }, unit: { init: true, full: { confirm: 'x' } }, stages: { install: true, ...stagesRan(FAILED_STEPS) }, serverLog: APOLLO_LOG });
+  assert.deepEqual(fixture.skips.map((x) => `${x.stage}:${x.fault}`), ['init:tool', 'plan:tool', 'catalog:tool', 'full:tool']);
+  // Its plan ran under another hash: that full stage is the real policy one.
+  const ranSteps = [{ step: 'init', exit: 0 }, { step: 'plan', exit: 0 }, { step: 'catalog', exit: 0 }];
+  assert.deepEqual(itemSkips({ resolved: {}, res: { error: null, install: { ok: true }, steps: ranSteps, fullRan: false }, unit: { init: true, full: { confirm: 'x' } }, stages: { install: true, ...stagesRan(ranSteps) } }).skips.map((x) => `${x.stage}:${x.fault}`), ['full:policy']);
+  // The full write test started and stopped (exit 4): a skip of ours, not an unexplained gap.
+  const fullSteps = [...ranSteps, { step: 'full', exit: 4, timed_out: false }];
+  const stopped = itemSkips({ resolved: {}, res: { error: null, install: { ok: true }, steps: fullSteps, fullRan: true }, unit: { init: true, full: { confirm: 'x' } }, stages: { install: true, ...stagesRan(fullSteps) } });
+  assert.deepEqual(stopped.skips.map((x) => `${x.stage}:${x.reason}:${x.fault}`), ['full:timeout_start:tool']);
+  assert.deepEqual(itemSkips({ resolved: {}, res: { error: null, install: { ok: true }, steps: [...ranSteps, { step: 'full', exit: 1 }], fullRan: true }, unit: { init: true, full: { confirm: 'x' } }, stages: { install: true, init: true, plan: true, catalog: true, full: true } }).skips, []);
   // Every skip is one the kit accepts.
-  for (const sk of [...apollo.skips, ...mck.skips]) assert.ok(SKIP_FAULTS[sk.reason].allowed.includes(sk.fault), `${sk.reason}/${sk.fault}`);
+  for (const sk of [...apollo.skips, ...mck.skips, ...fixture.skips, ...stopped.skips]) assert.ok(SKIP_FAULTS[sk.reason].allowed.includes(sk.fault), `${sk.reason}/${sk.fault}`);
   // The driver marks stages through stagesRan, and gives itemSkips the server's stderr.
   const driver = readFileSync(join(root, 'loop', 'run-items.mjs'), 'utf8');
   assert.match(driver, /Object\.assign\(stages, stagesRan\(res\.steps\)\)/);

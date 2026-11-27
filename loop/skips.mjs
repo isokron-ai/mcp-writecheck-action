@@ -237,9 +237,19 @@ export function itemSkips({ resolved, notStarted = false, res = null, unit = {},
       failed[st] = f.detail;
     }
     if (Object.keys(failed).length) notes.stage_detail = failed;
-    if (!res.fullRan) {
+    if (!res.fullRan && unit.full && !stages.plan) {
+      // R-WC-40: a fixture whose plan did not run never reached the hash check: our failure, not a policy choice.
+      add('full', 'tool_error', 'tool');
+      notes.full_detail = 'the plan did not run, so the full write test did not start';
+    } else if (!res.fullRan) {
       add('full', 'policy_excluded', 'policy');
-      notes.full_detail = !unit.full ? 'a third-party server is never given a manifest that writes' : 'the plan hash is not the accepted one (or the plan did not run), so the full write test did not start';
+      notes.full_detail = !unit.full ? 'a third-party server is never given a manifest that writes' : 'the plan hash is not the accepted one, so the full write test did not start';
+    } else if (stages.full === false) {
+      // R-WC-40: the full write test started and did not finish (exit 4, our time limit): ours, with what stopped it.
+      const step = [...(res.steps ?? [])].reverse().find((x) => x?.step === 'full') ?? null;
+      const f = stageFailure(step, serverLog);
+      add('full', f.reason, f.fault);
+      notes.full_detail = `the full write test did not finish (${f.detail})`;
     }
   }
   if (!evidenceComplete) add('catalog', 'trace_unavailable', 'tool');

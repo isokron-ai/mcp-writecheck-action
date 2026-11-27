@@ -83,6 +83,7 @@ Every stage that did not run is a skip in the meta file, and every skip says who
 | `unsupported_transport` | init (fixtures started over HTTP) | `tool` | init drafts from a stdio command |
 | `timeout_start`, `no_runnable_artifact` or `tool_error` (`stage_detail` in `logs/driver.json`) | each of init, plan, catalog that was attempted and did not run | `tool` | a stage ran only when its step exited 0 or 1 within our time limit (R-WC-40). Otherwise: `start_needs_config` (the server's stderr asks for configuration we did not give it), `not_a_server` (a usage block: a command line tool, not a stdio server, or one that needs arguments we did not give; `no_runnable_artifact`), `step_timeout` (our step time limit), `cli_refused` (exit 2 or 3: our manifest or the CLI's guard; `tool_error`), `start_failed` (anything else), `not_attempted` (an earlier step of ours stopped the unit; `tool_error`). Never `subject`: the step's status and the server's stderr cannot prove a defect of its own; never `policy` |
 | `policy_excluded` | full | `policy` | a third-party server is never given a manifest that writes; a fixture runs only under its accepted plan hash |
+| `tool_error`, or `timeout_start` and the other `stage_detail` codes above | full | `tool` | a fixture whose plan did not run never reached the hash check, and a full write test that started and did not finish (exit 4, our time limit) is ours (R-WC-40) |
 | `trace_unavailable` | catalog | `tool` | incomplete sandbox evidence |
 
 ## Backends
