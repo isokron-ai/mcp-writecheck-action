@@ -128,3 +128,18 @@ test('R-TSW-09: the pnpm download and its integrity check are separate steps in 
   assert.match(sh, /install\)[\s\S]*integrity mismatch[\s\S]*npm install --global/);
   assert.doesNotMatch(sh.slice(sh.indexOf('fetch)'), sh.indexOf('install)')), /integrity mismatch/, 'the download step never reports an integrity refusal');
 });
+
+test('R-TSW-10: a checkout of a pinned ref or of another repository is a named step, so a bad pin of ours is a lead and never matches the unnamed-checkout infrastructure pattern', () => {
+  const unnamed = [];
+  for (const f of workers) {
+    const text = readFileSync(join(dir, f), 'utf8');
+    for (const m of text.matchAll(/^( *)- uses: actions\/checkout@\S+[^\n]*\n((?:\1  [^\n]*\n)+)/gm)) {
+      if (/\n? *(ref|repository):/.test(m[2])) unnamed.push(f);
+    }
+  }
+  assert.deepEqual(unnamed, [], 'every checkout that names a ref or a repository has a name');
+  const selftest = readFileSync(join(dir, 'selftest.yml'), 'utf8');
+  assert.match(selftest, /- name: Check out the CLI at the pinned commit \(CLI_REF\)\n\s+uses: actions\/checkout@/);
+  assert.equal(infraOnly([job('x', 'failure', ['Check out the CLI at the pinned commit (CLI_REF)', 'failure'])]), false);
+  assert.equal(infraOnly([job('x', 'failure', ['Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1', 'failure'])]), true, 'a plain unnamed checkout is still infrastructure');
+});

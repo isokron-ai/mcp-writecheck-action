@@ -113,7 +113,8 @@ jobs:
             if (CLI_DEFAULT_REF !== process.env.CLI_REF) { console.error('contract.mjs CLI_DEFAULT_REF ' + CLI_DEFAULT_REF + ' is not CLI_REF ' + process.env.CLI_REF); process.exit(1); }
           "
 
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out the CLI at the pinned commit (CLI_REF)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: isokron-ai/mcp-write-safety
           ref: ${{ env.CLI_REF }}
