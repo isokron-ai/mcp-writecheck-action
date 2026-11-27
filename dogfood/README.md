@@ -20,7 +20,7 @@ it (`plan-hashes`, `job=hash` pairs).
 Rules every dogfood workflow follows:
 
 - Triggers: `workflow_dispatch` only, since 23 Nov 2026. These workflows are T0 workers of the tool-qa loop:
-  the loop dispatches them with `shard_id`, `attempt_id`, `fence` and `run_key`, and each one checks this repository's
+  the loop dispatches them with `shard_id`, `attempt_id`, `fence` and `run_key`, and each one ends with a sealed tool-qa result bundle (`loop/t0-bundle.mjs`); each one checks this repository's
   `LOOP_ENABLED` variable first (anything but `true` skips every job, green). There is no schedule, `push` or
   `pull_request` trigger, so a change to `action.yml` or `src/` is exercised against real servers when the loop next
   dispatches these, not on the pull request; `test.yml` still runs the unit tests on every push and pull request.
