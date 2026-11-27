@@ -128,6 +128,58 @@ export function installFault(inst, logText = '') {
 }
 
 /**
+ * The CLI's exit statuses after which a stage counts as run (contract.mjs CLI.exitRanToCompletion): 0 done, 1 a
+ * verdict. Any other status (2 usage or manifest, 3 refused, 4 stopped or failed, 130, none) or our step time limit
+ * means the stage did not run (R-WC-40).
+ */
+export const STAGE_RAN_EXITS = Object.freeze([0, 1]);
+const CLI_STAGES = Object.freeze(['init', 'plan', 'catalog', 'full']);
+
+/**
+ * Which CLI stages ran, from the unit's steps: a stage ran only when its step ended with a STAGE_RAN_EXITS status
+ * inside our time limit (R-WC-40). Attempted is not ran: before, any attempt counted, so a server whose init, plan and
+ * catalog all failed had no skip but the full stage's policy one, and was published as excluded by policy.
+ */
+export function stagesRan(steps = []) {
+  const out = {};
+  for (const s of steps) if (CLI_STAGES.includes(s?.step)) out[s.step] = !s.timed_out && STAGE_RAN_EXITS.includes(s.exit);
+  return out;
+}
+
+/** A usage block: the command printed how to call it instead of answering as a stdio server. */
+const USAGE_TEXT = /^\s*usage:/im;
+/** The server's own words that it needs configuration we did not give it (mcp-check live-probe R-LP-44, the plain cases). */
+const CONFIG_TEXT = new RegExp([
+  String.raw`\bconfig(?:uration)?(?:[\s_.-]?(?:file|path|dir(?:ectory)?))?\b[^\n]{0,100}?(?:not found|not exist|no such file|missing|not readable|failed to (?:read|load|open)|cannot (?:read|open|load|find)|could not (?:read|open|load|find)|unable to (?:read|open|load|find))`,
+  String.raw`(?:not found|no such file|missing|failed to (?:read|load|open)|cannot (?:read|open|load|find)|could not (?:read|open|load|find)|unable to (?:read|open|load|find))[^\n]{0,100}?\bconfig(?:uration)?\b`,
+  String.raw`kubeconfig`, String.raw`--config\b`,
+  String.raw`\b(?:missing|required|expected)\s+(?:required\s+)?(?:argument|option|flag|parameter|env(?:ironment)?(?:\s+var(?:iable)?)?)`,
+  String.raw`\b(?:argument|option|flag|parameter|env(?:ironment)?\s+var(?:iable)?)s?\b[^\n]{0,60}?\b(?:is|are)\s+(?:required|missing|not set)`,
+  String.raw`\bplease\s+(?:create|set|provide|specify)\b`,
+].join('|'), 'i');
+
+/**
+ * Why a CLI stage that was attempted did not run (R-WC-40), as { reason, fault, detail }. Always our side (`tool`):
+ * the step's status and the server's stderr can say what we did not give the server, but never prove a defect of its
+ * own, so an ambiguous failure stays ours (as live-probe's start_env_limited). Never `policy`: nothing here is a choice.
+ *   step       the stage's step ({ exit, timed_out }), or null when the stage never started
+ *   serverLog  the server's stderr (a split run's server.log; the step's own log otherwise)
+ * detail: step_timeout (our step time limit), cli_refused (exit 2 or 3: our manifest or the CLI's guard),
+ * not_a_server (a usage block: a command line tool rather than a stdio server, or one that needs arguments we did not
+ * give), start_needs_config (it asked for configuration), start_failed (anything else), not_attempted (an earlier
+ * step of ours stopped the unit first).
+ */
+export function stageFailure(step, serverLog = '') {
+  if (!step) return { reason: 'tool_error', fault: 'tool', detail: 'not_attempted' };
+  if (step.timed_out) return { reason: 'timeout_start', fault: 'tool', detail: 'step_timeout' };
+  if (step.exit === 2 || step.exit === 3) return { reason: 'tool_error', fault: 'tool', detail: 'cli_refused' };
+  const text = String(serverLog ?? '').slice(-64 * 1024);
+  if (USAGE_TEXT.test(text)) return { reason: 'no_runnable_artifact', fault: 'tool', detail: 'not_a_server' };
+  if (CONFIG_TEXT.test(text)) return { reason: 'timeout_start', fault: 'tool', detail: 'start_needs_config' };
+  return { reason: 'timeout_start', fault: 'tool', detail: 'start_failed' };
+}
+
+/**
  * The skips of one item and the driver's notes on them. Inputs (all optional but `resolved`):
  *   resolved      loop/items.mjs resolveSubject's answer ({ skip } or the launch)
  *   notStarted    the shard used its time budget before the item started
@@ -136,9 +188,10 @@ export function installFault(inst, logText = '') {
  *   stages        which stages ran
  *   evidenceComplete  false when the sandbox evidence is incomplete (the ci lane)
  *   installLog    the install's own output, for installFault
- * Returns { skips, notes } where notes holds skip_detail, init_detail and full_detail for logs/driver.json.
+ *   serverLog     the server's stderr, for stageFailure
+ * Returns { skips, notes } where notes holds skip_detail, init_detail, stage_detail and full_detail for logs/driver.json.
  */
-export function itemSkips({ resolved, notStarted = false, res = null, unit = {}, stages = {}, evidenceComplete = true, installLog = '' }) {
+export function itemSkips({ resolved, notStarted = false, res = null, unit = {}, stages = {}, evidenceComplete = true, installLog = '', serverLog = '' }) {
   const skips = [];
   const notes = {};
   const add = (stage, reason, fault, extra = {}) => skips.push({ stage, reason, fault, ...extra, evidence: 'logs/driver.json' });
@@ -174,6 +227,16 @@ export function itemSkips({ resolved, notStarted = false, res = null, unit = {},
       add('init', 'unsupported_transport', 'tool');
       notes.init_detail = 'the fixture server is started over streamable HTTP by its manifest; init drafts from a stdio command';
     }
+    // R-WC-40: a CLI stage that was attempted and failed, or never started, is a skip of ours with what stopped it.
+    const failed = {};
+    for (const st of ['init', 'plan', 'catalog']) {
+      if (stages[st] || (st === 'init' && unit.init === false)) continue;
+      const step = [...(res.steps ?? [])].reverse().find((x) => x?.step === st) ?? null;
+      const f = stageFailure(step, serverLog);
+      add(st, f.reason, f.fault);
+      failed[st] = f.detail;
+    }
+    if (Object.keys(failed).length) notes.stage_detail = failed;
     if (!res.fullRan) {
       add('full', 'policy_excluded', 'policy');
       notes.full_detail = !unit.full ? 'a third-party server is never given a manifest that writes' : 'the plan hash is not the accepted one (or the plan did not run), so the full write test did not start';

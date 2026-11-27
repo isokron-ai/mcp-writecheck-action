@@ -43,7 +43,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { FIXTURE_MANIFEST, InputError, catalogManifest, checkId, isProofLane, loadFixtures, loadSeed, parseItems, resolveSubject } from './items.mjs';
 import { ndjson, observations, planHash, publicSummary, summarize } from './summary.mjs';
 import { dockerPlatform, extractBinaryImage } from './binary-image.mjs';
-import { entryErrorCode, itemSkips } from './skips.mjs';
+import { entryErrorCode, itemSkips, stagesRan } from './skips.mjs';
 import { BRIDGE_ENV_EMPTY, OCI_MAX_UNPACKED, cargoPlan, launchEnv, loadImages, loadMck, ociPullProblem, ociServer, portableBridge, resolveBeyondSeed } from './launch.mjs';
 import { BundleFiles, buildMeta, forgeryVerdict, knownBadVerdict, knownGoodVerdict, parseCollected, safeRawPath } from './bundle.mjs';
 
@@ -738,6 +738,17 @@ async function runControls(ctx) {
   return out;
 }
 
+/**
+ * The last 64 KB of the server's stderr (R-WC-40): a split run's server.log (the server's own container), else the
+ * logs of the CLI steps that failed (a fixture's server runs in the step's container). Empty when there is none.
+ */
+export function lastStderr(stepDir, steps = []) {
+  const tail = (f) => { try { const b = readFileSync(f); return b.subarray(Math.max(0, b.length - 64 * 1024)).toString('latin1'); } catch { return ''; } };
+  const server = join(stepDir, 'server.log');
+  if (existsSync(server)) return tail(server);
+  return steps.filter((x) => ['init', 'plan', 'catalog'].includes(x?.step) && x.exit !== 0).map((x) => tail(join(stepDir, `${x.step}.log`))).join('\n').slice(-64 * 1024);
+}
+
 async function runItem(ctx, item, deadline) {
   const { shard, fixtures, seed } = ctx;
   const startedAt = iso();
@@ -788,13 +799,16 @@ async function runItem(ctx, item, deadline) {
     driver.evidence_missing = [...new Set(res.missing)];
     driver.collected = res.collected;
     stages.install = !!res.install?.ok;
-    for (const s of res.steps) if (s.step in stages) stages[s.step] = true;
+    // R-WC-40: a stage ran only when its step ended with a status that means it did (attempted is not ran).
+    Object.assign(stages, stagesRan(res.steps));
     summary = summarize({ files: res.files, steps: res.steps, planStdout: res.planStdout, fullRan: res.fullRan, acceptedPlanHash: u.proofPlan ? null : u.acceptedHash }); // a proof item's plan is not accepted: the record says so, with no drift
     const evidenceComplete = ctx.lane !== 'ci' || driver.evidence_missing.length === 0;
     // Every stage that did not run, with its fault side (R-WC-24): the install's own output is read only to tell a
     // package-level error (the subject's) from our limits; it stays in raw/.
     const installLog = res.install && !res.install.ok && existsSync(join(u.stepDir, 'docker.log')) ? readFileSync(join(u.stepDir, 'docker.log'), 'latin1') : '';
-    const s = itemSkips({ resolved, res, unit: u, stages, evidenceComplete, installLog });
+    // The server's stderr, read only to say which of our limits stopped a stage (R-WC-40); it stays in raw/.
+    const serverLog = res.install?.ok && ['init', 'plan', 'catalog'].some((x) => !stages[x]) ? lastStderr(u.stepDir, res.steps) : '';
+    const s = itemSkips({ resolved, res, unit: u, stages, evidenceComplete, installLog, serverLog });
     skips.push(...s.skips);
     Object.assign(driver, s.notes);
     b.put('results/writecheck.json', json({ subject: item.subject, source: resolved.source, package: resolved.package, resolved_version: res.install?.resolved_version ?? null, ...publicSummary(summary) }));

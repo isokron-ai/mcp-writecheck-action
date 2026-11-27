@@ -18,7 +18,9 @@ import { findRunFolder, observations, planHash, publicSummary, readCatalog, read
 import { BundleFiles, buildMeta, forgeryVerdict, hasIdentityKeys, knownBadVerdict, knownGoodVerdict, parseCollected, safeRawPath } from '../loop/bundle.mjs';
 import { evaluateGuard, laneVariable, main as guardMain, refProblem } from '../loop/guard.mjs';
 import { SKIP_FAULTS, buildManifest, resultFault, validateManifest } from './fixtures/loop/tool-qa/worker-kit/contract.mjs';
-import { REASON_FAULT, entryErrorCode, installFault, itemSkips } from '../loop/skips.mjs';
+import { REASON_FAULT, STAGE_RAN_EXITS, entryErrorCode, installFault, itemSkips, stageFailure, stagesRan } from '../loop/skips.mjs';
+import { CLI } from '../contract.mjs';
+import { lastStderr } from '../loop/run-items.mjs';
 import { checkBundle } from './fixtures/loop/tool-qa/ingest/forgery.mjs';
 import { parseRegistry, validateObservations } from './fixtures/loop/tool-qa/ingest/registry.mjs';
 
@@ -548,7 +550,7 @@ test('R-WC-24: every skip says its fault side, one the reason allows; our own li
   // The driver builds its skips only through itemSkips: no skip object is written in run-items.mjs itself.
   const driver = readFileSync(join(root, 'loop', 'run-items.mjs'), 'utf8');
   assert.doesNotMatch(driver, /skips\.push\(\{/);
-  assert.match(driver, /itemSkips\(\{ resolved, res, unit: u, stages, evidenceComplete, installLog \}\)/);
+  assert.match(driver, /itemSkips\(\{ resolved, res, unit: u, stages, evidenceComplete, installLog, serverLog \}\)/);
 });
 
 test('R-WC-25: a harness error is our own tool_error (retryable), not somebody else\'s outage', () => {
@@ -695,4 +697,54 @@ test('R-WC-29: the manifest names each tool by its tool-qa pin key, mcp-writeche
   assert.match(src, /const actionRef = actionSha\(env, gitHead\(\)\);/);
   assert.match(src, /ctx\.tools = toolsFor\(\{ cliRef: env\.CLI_REF, actionRef, sandboxRef: env\.SANDBOX_REF, gvisor: shard\.cfg\.release(?:, mckRef: ctx\.mckRef)? \}\);/);
   assert.deepEqual(toolsFor({ cliRef: 'c', actionRef: A, sandboxRef: 'd', gvisor: 'g', mckRef: 'e'.repeat(40) }).at(-1), { name: 'mcp-check', version: 'e'.repeat(40) });
+});
+
+// R-WC-40. The shapes are the 25-27 Nov loop bundles: init, plan and catalog each exited 4 after about 30.5 s with
+// "server INIT did not initialize: timed out", no tool read. apollographql/apollo-mcp-server@efeeae43e2cd (OCI) logged
+// "failed to read config file '/config.yaml'"; isokron-ai/mcp-check@99da78b026bf (npm) resolves to its command line
+// tool, which prints its usage. Both were recorded fault policy, coverage excluded.
+const FAILED_STEPS = ['init', 'plan', 'catalog'].map((step) => ({ step, exit: 4, timed_out: false, ms: 30_512 }));
+const APOLLO_LOG = '{"listening":7100}\nError: failed to read config file \'/config.yaml\': No such file or directory (os error 2)\n';
+const MCK_LOG = '{"listening":7100}\nmcp-check: no input: give a tools.json file, -, --stdin, --url, -- <command>, --config, --repo, --repo-dir or --registry\n\nmcp-check 1.3.1: grade an MCP server\'s tools/list (rubric 2.2.0)\n\nUsage:\n  mcp-check <tools.json | - | --stdin> [options]\n';
+
+test('R-WC-40: a stage counts as run only when its step ended with a status that means it ran; a server whose init, plan and catalog failed is ours, never excluded by policy', () => {
+  // The statuses are the CLI's own (contract.mjs): 0 done, 1 a verdict.
+  assert.deepEqual([...STAGE_RAN_EXITS], CLI.exitRanToCompletion);
+  assert.deepEqual(stagesRan(FAILED_STEPS), { init: false, plan: false, catalog: false });
+  assert.deepEqual(stagesRan([{ step: 'init', exit: 0 }, { step: 'plan', exit: 0 }, { step: 'catalog', exit: 1 }, { step: 'full', exit: 0, timed_out: true }]), { init: true, plan: true, catalog: true, full: false });
+  const third = { init: true, full: null };
+  const run = (log, steps = FAILED_STEPS) => itemSkips({ resolved: {}, res: { error: null, install: { ok: true }, steps, fullRan: false }, unit: third, stages: { install: true, ...stagesRan(steps) }, serverLog: log });
+  const apollo = run(APOLLO_LOG);
+  assert.deepEqual(apollo.skips.map((x) => `${x.stage}:${x.reason}:${x.fault}`), ['init:timeout_start:tool', 'plan:timeout_start:tool', 'catalog:timeout_start:tool', 'full:policy_excluded:policy']);
+  assert.deepEqual(apollo.notes.stage_detail, { init: 'start_needs_config', plan: 'start_needs_config', catalog: 'start_needs_config' });
+  // Our limit comes first: the result is unassessed by our tool, not excluded and not the server's.
+  assert.deepEqual(resultFault(apollo.skips).coverage, 'unassessed_tool');
+  const mck = run(MCK_LOG);
+  assert.deepEqual([...new Set(mck.skips.filter((x) => x.stage !== 'full').map((x) => `${x.reason}:${x.fault}`))], ['no_runnable_artifact:tool']);
+  assert.equal(mck.notes.stage_detail.catalog, 'not_a_server');
+  assert.equal(resultFault(mck.skips).fault, 'tool');
+  // Nothing telling on stderr: still ours (an ambiguous failure is never the server's).
+  assert.deepEqual(stageFailure({ exit: 4, timed_out: false }, '{"listening":7100}\n'), { reason: 'timeout_start', fault: 'tool', detail: 'start_failed' });
+  assert.deepEqual(stageFailure({ exit: 4, timed_out: true }, APOLLO_LOG).detail, 'step_timeout');
+  assert.deepEqual(stageFailure({ exit: 2 }, '').reason, 'tool_error');
+  assert.deepEqual(stageFailure(null, '').detail, 'not_attempted');
+  // One stage failed after the others ran: only that one is a skip.
+  const partial = run('', [{ step: 'init', exit: 0 }, { step: 'plan', exit: 0 }, { step: 'catalog', exit: 4 }]);
+  assert.deepEqual(partial.skips.map((x) => x.stage), ['catalog', 'full']);
+  // A catalog that ran (github/github-mcp-server, 46 tools) keeps only the full stage's policy skip.
+  assert.deepEqual(run('', [{ step: 'init', exit: 0 }, { step: 'plan', exit: 0 }, { step: 'catalog', exit: 1 }]).skips.map((x) => `${x.stage}:${x.fault}`), ['full:policy']);
+  // A fixture's setup that failed leaves init, plan and catalog never started: ours too.
+  assert.deepEqual(run('', [{ step: 'setup-0', exit: 1 }]).skips.filter((x) => x.stage !== 'full').map((x) => `${x.reason}:${x.fault}`), ['tool_error:tool', 'tool_error:tool', 'tool_error:tool']);
+  // Every skip is one the kit accepts.
+  for (const sk of [...apollo.skips, ...mck.skips]) assert.ok(SKIP_FAULTS[sk.reason].allowed.includes(sk.fault), `${sk.reason}/${sk.fault}`);
+  // The driver marks stages through stagesRan, and gives itemSkips the server's stderr.
+  const driver = readFileSync(join(root, 'loop', 'run-items.mjs'), 'utf8');
+  assert.match(driver, /Object\.assign\(stages, stagesRan\(res\.steps\)\)/);
+  assert.doesNotMatch(driver, /stages\[s\.step\] = true/);
+  // The stderr comes from a split run's server.log, else the failed steps' own logs.
+  const d = mkdtempSync(join(tmpdir(), 'wc40-'));
+  writeFileSync(join(d, 'init.log'), 'error: server INIT did not initialize: timed out\nUsage: x\n');
+  assert.match(lastStderr(d, FAILED_STEPS), /Usage: x/);
+  writeFileSync(join(d, 'server.log'), APOLLO_LOG);
+  assert.equal(lastStderr(d, FAILED_STEPS), APOLLO_LOG);
 });
