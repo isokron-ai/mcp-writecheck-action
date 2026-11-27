@@ -91,11 +91,14 @@ test('R-TSW-07: a run that failed only at steps that fetch from the network is i
   assert.deepEqual(b.meta.skips, [{ stage: 'worker', reason: 'upstream_unavailable', fault: 'infra', retryable: true }]);
   assert.equal(infraOnly([job('x', 'failure', ['Run actions/setup-go@abc', 'failure'])]), true);
   assert.equal(infraOnly([job('x', 'failure', ['Take the upstream binary from its image', 'failure'])]), true);
+  for (const n of ['Build the test app', 'Build the research app', 'Build the research build', 'Build the research server', 'Build kronicle-lite', 'Build sea-lite', 'Start Grafana']) assert.equal(infraOnly([job('x', 'failure', [n, 'failure'])]), true, n);
 });
 
 test('R-TSW-08: a failure at any other step, a mix, a failed job with no failed step, or no step information is a lead against our tool, never infrastructure', () => {
   for (const jobs of [
     [job('x', 'failure', ['Full run', 'failure'])],
+    [job('x', 'failure', ['Build tiny-tracker', 'failure'])],
+    [job('x', 'failure', ['Build mcp-writecheck', 'failure'])],
     [job('x', 'failure', ['Install kind', 'failure'], ['Full run', 'failure'])],
     [job('x', 'failure', ['Install kind', 'failure']), job('y', 'failure', ['Catalog', 'failure'])],
     [job('x', 'failure')],
