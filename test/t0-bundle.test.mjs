@@ -90,8 +90,8 @@ test('R-TSW-07: a run that failed only at steps that fetch from the network is i
   assert.deepEqual(b.meta.controls, [{ kind: 'known_good', expected: 'green_or_infra', observed: 'green_or_infra' }]);
   assert.deepEqual(b.meta.skips, [{ stage: 'worker', reason: 'upstream_unavailable', fault: 'infra', retryable: true }]);
   assert.equal(infraOnly([job('x', 'failure', ['Run actions/setup-go@abc', 'failure'])]), true);
-  assert.equal(infraOnly([job('x', 'failure', ['Take the upstream binary from its image', 'failure'])]), true);
-  for (const n of ['Build the test app', 'Build the research app', 'Build the research build', 'Build the research server', 'Build kronicle-lite', 'Build sea-lite', 'Start Grafana']) assert.equal(infraOnly([job('x', 'failure', [n, 'failure'])]), true, n);
+  assert.equal(infraOnly([job('x', 'failure', ['Download pnpm', 'failure'])]), true);
+  assert.equal(infraOnly([job('x', 'failure', ['Run docker/setup-buildx-action@abc', 'failure'])]), true);
 });
 
 test('R-TSW-08: a failure at any other step, a mix, a failed job with no failed step, or no step information is a lead against our tool, never infrastructure', () => {
@@ -99,6 +99,11 @@ test('R-TSW-08: a failure at any other step, a mix, a failed job with no failed 
     [job('x', 'failure', ['Full run', 'failure'])],
     [job('x', 'failure', ['Build tiny-tracker', 'failure'])],
     [job('x', 'failure', ['Build mcp-writecheck', 'failure'])],
+    [job('x', 'failure', ['Install pnpm (integrity checked)', 'failure'])],
+    [job('x', 'failure', ['Create the cluster', 'failure'])],
+    [job('x', 'failure', ['Build the test app', 'failure'])],
+    [job('x', 'failure', ['Take the upstream binary from its image', 'failure'])],
+    [job('x', 'failure', ['Start Postgres (password made here, masked)', 'failure'])],
     [job('x', 'failure', ['Install kind', 'failure'], ['Full run', 'failure'])],
     [job('x', 'failure', ['Install kind', 'failure']), job('y', 'failure', ['Catalog', 'failure'])],
     [job('x', 'failure')],
@@ -111,4 +116,15 @@ test('R-TSW-08: a failure at any other step, a mix, a failed job with no failed 
     assert.deepEqual(b.meta.skips, []);
   }
   assert.equal(build({ ...ENV, NEEDS: needs('success') }, new Date(), { jobs: [job('x', 'failure', ['Install kind', 'failure'])] }).run.observed, 'green', 'infra is only read for a failed run');
+});
+
+test('R-TSW-09: the pnpm download and its integrity check are separate steps in the payload workflow, so an integrity mismatch is never read as a network failure', () => {
+  const y = readFileSync(join(dir, 'dogfood-payload.yml'), 'utf8');
+  assert.doesNotMatch(y, /run: dogfood\/install-pnpm\.sh\n/, 'no step runs the script without a mode');
+  const fetches = [...y.matchAll(/- name: Download pnpm\n\s+run: dogfood\/install-pnpm\.sh fetch\n\s+- name: Install pnpm \(integrity checked\)\n\s+run: dogfood\/install-pnpm\.sh install\n/g)];
+  assert.equal(fetches.length, 3, 'each of the three jobs downloads, then checks and installs');
+  const sh = readFileSync(join(root, 'dogfood', 'install-pnpm.sh'), 'utf8');
+  assert.match(sh, /fetch\)[\s\S]*npm pack/);
+  assert.match(sh, /install\)[\s\S]*integrity mismatch[\s\S]*npm install --global/);
+  assert.doesNotMatch(sh.slice(sh.indexOf('fetch)'), sh.indexOf('install)')), /integrity mismatch/, 'the download step never reports an integrity refusal');
 });

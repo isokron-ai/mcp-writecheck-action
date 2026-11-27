@@ -160,8 +160,10 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
-      - name: Install pnpm
-        run: dogfood/install-pnpm.sh
+      - name: Download pnpm
+        run: dogfood/install-pnpm.sh fetch
+      - name: Install pnpm (integrity checked)
+        run: dogfood/install-pnpm.sh install
       - name: Build the research app
         run: dogfood/payload/stack.sh build research
       - name: Start Postgres (password made here, masked)
@@ -259,8 +261,10 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
-      - name: Install pnpm
-        run: dogfood/install-pnpm.sh
+      - name: Download pnpm
+        run: dogfood/install-pnpm.sh fetch
+      - name: Install pnpm (integrity checked)
+        run: dogfood/install-pnpm.sh install
       - name: Build the research app
         run: dogfood/payload/stack.sh build research
       - name: Start Postgres (password made here, masked)
@@ -363,8 +367,10 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
-      - name: Install pnpm
-        run: dogfood/install-pnpm.sh
+      - name: Download pnpm
+        run: dogfood/install-pnpm.sh fetch
+      - name: Install pnpm (integrity checked)
+        run: dogfood/install-pnpm.sh install
       - name: Install the app (upstream plugin, unmodified)
         run: dogfood/payload/stack.sh build vendor
       - name: Start Postgres (password made here, masked)

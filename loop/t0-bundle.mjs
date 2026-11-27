@@ -51,17 +51,14 @@ export function observe(results) {
 }
 
 /**
- * Steps that fetch from the network (an image, a release binary, a package registry, a cluster tool, GitHub itself). A job
- * that failed ONLY at such steps failed on infrastructure (Docker Hub, the Go proxy, kind's download), which is not a lead
- * against our tool: the bundle then carries a retryable infra skip and tool-qa sends the worker out again.
+ * Steps that ONLY fetch from the network (GitHub, an image registry, the Go proxy, an npm tarball): a job that failed ONLY at
+ * such steps failed on infrastructure, which is not a lead against our tool: the bundle then carries a retryable infra skip and
+ * tool-qa sends the worker out again. Nothing that builds, checks or starts our own code is listed: a compile error in our
+ * own build, our own up.sh or RBAC, a plan hash or an integrity mismatch is ours (the pnpm tarball is downloaded in its own
+ * step, and its integrity check is another, so a refusal is never read as a network failure). Anything not listed is a lead.
  */
 export const INFRA_STEPS = Object.freeze([
-  /^Set up job$/, /^Install kind$/, /^Create the cluster$/, /^Start Postgres\b/, /^Take the upstream binary from its image$/,
-  /^Install the upstream server$/, /^Install pnpm$/, /^Install the app \(upstream plugin, unmodified\)$/,
-  // Builds that download their dependencies (npm, pnpm, the Go proxy) or pull an image. A compile error in them also fails the
-  // step and reads as infrastructure here (the run is retried, then recorded as skips); our own tiny-tracker and mcp-writecheck
-  // builds (locked, --ignore-scripts) are not listed, so a failure there stays a lead.
-  /^Build the test app$/, /^Build the research (app|build|server)$/, /^Build (kronicle-lite|sea-lite)$/, /^Start Grafana$/,
+  /^Set up job$/, /^Install kind$/, /^Download pnpm$/,
   /^Run actions\/(checkout|setup-go|setup-node|cache|download-artifact)@/, /^Run docker\//,
 ]);
 
