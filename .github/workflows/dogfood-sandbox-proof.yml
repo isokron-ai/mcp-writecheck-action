@@ -40,8 +40,8 @@ jobs:
     with:
       shard_id: proof-${{ github.run_id }}-kronicle-lite
       attempt_id: proof-${{ github.run_id }}-kronicle-lite
-      fence: proof
-      run_key: proof
+      fence: '1'
+      run_key: 64979d408eb9997ff50baeb4d986a2af1bf499f3a4134406e6fd983c9a3fe707
       proof: true
 
   writesafe:
@@ -50,8 +50,8 @@ jobs:
     with:
       shard_id: proof-${{ github.run_id }}-writesafe
       attempt_id: proof-${{ github.run_id }}-writesafe
-      fence: proof
-      run_key: proof
+      fence: '1'
+      run_key: 64979d408eb9997ff50baeb4d986a2af1bf499f3a4134406e6fd983c9a3fe707
       proof: true
 
   sea-lite:
@@ -60,8 +60,8 @@ jobs:
     with:
       shard_id: proof-${{ github.run_id }}-sea-lite
       attempt_id: proof-${{ github.run_id }}-sea-lite
-      fence: proof
-      run_key: proof
+      fence: '1'
+      run_key: 64979d408eb9997ff50baeb4d986a2af1bf499f3a4134406e6fd983c9a3fe707
       proof: true
 
   grafana:
@@ -70,8 +70,8 @@ jobs:
     with:
       shard_id: proof-${{ github.run_id }}-grafana
       attempt_id: proof-${{ github.run_id }}-grafana
-      fence: proof
-      run_key: proof
+      fence: '1'
+      run_key: 64979d408eb9997ff50baeb4d986a2af1bf499f3a4134406e6fd983c9a3fe707
       proof: true
 
   payload:
@@ -80,6 +80,6 @@ jobs:
     with:
       shard_id: proof-${{ github.run_id }}-payload
       attempt_id: proof-${{ github.run_id }}-payload
-      fence: proof
-      run_key: proof
+      fence: '1'
+      run_key: 64979d408eb9997ff50baeb4d986a2af1bf499f3a4134406e6fd983c9a3fe707
       proof: true

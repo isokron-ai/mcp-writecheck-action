@@ -286,7 +286,8 @@ async function cmdBuild(argv, env) {
     const benv = {
       ...baseEnv({ HOME: join(st.temp, 'home'), npm_config_cache: join(st.temp, 'home', '.npm'), npm_config_fund: 'false', npm_config_audit: 'false' }),
       HTTPS_PROXY: url, https_proxy: url, HTTP_PROXY: url, http_proxy: url, NO_PROXY: '', no_proxy: '',
-      ...(o.image === 'go' ? { GOPATH: join(st.temp, 'go'), GOCACHE: join(st.temp, 'gocache'), GOMODCACHE: join(st.temp, 'go', 'pkg', 'mod'), GOTOOLCHAIN: 'local', GOPROXY: 'https://proxy.golang.org', GOSUMDB: 'sum.golang.org', GOTELEMETRY: 'off' } : {}),
+      // GOTMPDIR: go's build folder fills the sandbox's 512 MiB /tmp on a large module (the Grafana server); the volume has room.
+      ...(o.image === 'go' ? { GOTMPDIR: join(st.temp, 'gotmp'), GOPATH: join(st.temp, 'go'), GOCACHE: join(st.temp, 'gocache'), GOMODCACHE: join(st.temp, 'go', 'pkg', 'mod'), GOTOOLCHAIN: 'local', GOPROXY: 'https://proxy.golang.org', GOSUMDB: 'sum.golang.org', GOTELEMETRY: 'off' } : {}),
       // R-WC-09's build: a native module compiles from source against the image's own Node headers (no download).
       ...(o.native ? { ...M.NATIVE_BUILD_ENV } : { npm_config_nodedir: '/usr/local' }),
       ...envPairs(o.env),
@@ -296,7 +297,7 @@ async function cmdBuild(argv, env) {
     const cidfile = join(shard.cidDir, `${name}.cid`);
     // The go image has no Node: its command runs as given. Every other build runs through dogfood-in.mjs (the temp folder).
     if (o.image === 'go' && o.path.length) throw new SbxError('--path needs dogfood-in.mjs, which the go image cannot run');
-    const cmd = o.image === 'go' ? o.cmd : [...inArgs(st, { path: o.path.map((x) => inMirror(x, st)) }), ...o.cmd];
+    const cmd = o.image === 'go' ? ['sh', '-c', 'mkdir -p "$GOTMPDIR" && exec "$@"', 'sh', ...o.cmd] : [...inArgs(st, { path: o.path.map((x) => inMirror(x, st)) }), ...o.cmd];
     const bargv = M.sandboxRunArgs({ name, image, network: inNet, ip: M.NETS.install.target, resolv: 'install', cidfile, labels: shard.dk.labels(), cpus: shard.cpus, workdir: cwd, mounts: [{ src: st.wsVol, dst: st.mirror }, { src: shard.toolsVol, dst: TOOLS, ro: true }], env: benv, cmd });
     shard.writeSettings(bargv, { subject: tag, role: 'install' });
     const t0 = Date.now();

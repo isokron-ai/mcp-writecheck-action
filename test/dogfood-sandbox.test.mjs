@@ -136,6 +136,8 @@ export function proofProblems(raw) {
   if (JSON.stringify(called) !== JSON.stringify(SANDBOXED)) p.push(`calls ${called.join(', ')}`);
   for (const [n, t] of Object.entries(J)) {
     if (!/\n      proof: true\n/.test(t)) p.push(`${n}: not a proof run`);
+    // The worker-kit refuses a fence that is not a positive whole number or a run_key that is not sha256 hex, even in a dry run.
+    if (!/\n      fence: '[1-9][0-9]*'\n      run_key: [0-9a-f]{64}\n/.test(t)) p.push(`${n}: a fence or run_key the worker-kit refuses`);
     if (!/\n    if: github\.event\.pull_request\.head\.repo\.full_name == github\.repository\n/.test(t)) p.push(`${n}: runs for a fork`);
   }
   return p;
@@ -151,6 +153,7 @@ test('R-DSB-02: the pull-request proof calls exactly the sandboxed workers, as a
     'not a dry run': text.replace('      proof: true\n', '      proof: false\n'),
     kubernetes: `${text}\n  kubernetes:\n    if: github.event.pull_request.head.repo.full_name == github.repository\n    uses: ./.github/workflows/dogfood-kubernetes.yml\n    with:\n      proof: true\n`,
     fork: text.replace('    if: github.event.pull_request.head.repo.full_name == github.repository\n', ''),
+    'a fence the worker-kit refuses': text.replace("      fence: '1'\n", '      fence: proof\n'),
   })) {
     assert.notEqual(m, text, what);
     assert.ok(proofProblems(m).length > 0, `${what}: refused`);
