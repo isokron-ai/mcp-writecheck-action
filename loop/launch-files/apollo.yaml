@@ -1,0 +1,8 @@
+transport:
+  type: stdio
+schema:
+  source: local
+  path: /opt/surface/loop/launch-files/apollo-schema.graphql
+introspection:
+  introspect:
+    enabled: false
