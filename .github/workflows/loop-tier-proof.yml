@@ -1,0 +1,137 @@
+# A proof of the writecheck loop worker's code (corpus.yml) on a branch, for the subjects named one per line in loop/tier-proof-subjects.txt (the
+# pull request runs it when that file or this workflow changes): the same steps as loop-fixture.yml up to the end of the sandbox, one job per
+# shard of at most 10 subjects. corpus.yml itself runs from main only. Nothing is sealed,
+# uploaded to tool-qa or sent anywhere; the plaintext bundles of the shard are kept 7 days for review (the subjects are public repositories).
+# Used to prove changes to loop/ on a branch against the T0 and T1 subjects before they reach main.
+
+name: loop-tier-proof
+
+on:
+  pull_request:
+    paths:
+      - loop/tier-proof-subjects.txt
+      - .github/workflows/loop-tier-proof.yml
+
+permissions: {}
+
+concurrency:
+  group: loop-tier-proof-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  WORKER_KIT_REF: '2ffcea16117ec679398f83eefe8c6fa66d38bac6'
+  SEED_REF: '2ffcea16117ec679398f83eefe8c6fa66d38bac6'
+  SANDBOX_REF: '3738f2c3dabe03e943a1e5ff0a2441aca831e910'
+  # isokron-ai/mcp-check at the commit tool-qa's live-probe lane runs (pump/workflows.json, live-probe versions.tool): its
+  # resolver chooses an OCI subject's image for this lane too (loop/launch.mjs, WC14), so both lanes run the same image.
+  MCP_CHECK_REF: 'e89d084bdbdddd0e40726b14a27d57f0f1844098'
+
+jobs:
+  conformance:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+    uses: isokron-ai/mcp-surface-corpus/.github/workflows/sandbox-conformance.yml@3738f2c3dabe03e943a1e5ff0a2441aca831e910 # SANDBOX_REF
+    with:
+      mutations: false
+      artifact-prefix: loop-tier-proof-conformance
+
+  proof:
+    needs: conformance
+    if: github.event.pull_request.head.repo.full_name == github.repository && needs.conformance.outputs.verdict == 'pass'
+    name: loop-tier-proof-${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: inputs
+        name: The shard
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          shard="tierproof-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${SHARD}"
+          items=$(node -e 'const l=require("node:fs").readFileSync("loop/tier-proof-subjects.txt","utf8").split("\n").map((s)=>s.trim()).filter(Boolean).slice(10*Number(process.env.SHARD),10*Number(process.env.SHARD)+10);const c=require("node:crypto");console.log(JSON.stringify(l.map((s,i)=>({subject:s,run_key:c.createHash("sha256").update(s+process.env.GITHUB_RUN_ID).digest("hex"),fence:i+1}))))')
+          {
+            echo "shard_id=$shard"
+            echo "attempt_id=$shard"
+            echo "items=$items"
+            echo "tool_sha="
+          } >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ steps.inputs.outputs.tool_sha || github.sha }}
+      # tool-qa R-PIN-01 (R-WC-28): the lane code is the commit the pump pinned (tool_sha), else this run's own commit; the
+      # job stops unless the checkout is exactly that commit, and the driver reports it as the mcp-writecheck-action that ran.
+      - name: The checkout is the commit to run
+        env:
+          TOOL_SHA: ${{ steps.inputs.outputs.tool_sha }}
+        run: |
+          head=$(git rev-parse HEAD)
+          want="${TOOL_SHA:-$GITHUB_SHA}"
+          if [ "$head" != "$want" ]; then echo "::error title=writecheck::the checkout is not the commit to run"; exit 1; fi
+          echo "ACTION_SHA=$head" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Check the items in full
+        env:
+          ITEMS: ${{ steps.inputs.outputs.items }}
+        run: node --input-type=module -e 'import { parseItems } from "./loop/items.mjs"; console.log(parseItems(process.env.ITEMS).length + " item(s)")'
+      - name: Choose the CLI commit
+        run: dogfood/cli-ref.sh
+      # The CLI first, before any third-party code runs in this job; then the sandbox's own code and the seed.
+      - name: Fetch and build
+        run: loop/prepare.sh fetch
+      # gVisor, the firewall and the hostile self test on this very runner, before any target; the step fails
+      # unless the telemetry check recomputes a pass.
+      - id: sandbox
+        name: Sandbox guard (gVisor, firewall, self test)
+        uses: isokron-ai/mcp-surface-corpus/sandbox-guard@3738f2c3dabe03e943a1e5ff0a2441aca831e910 # SANDBOX_REF
+      - name: The guard ran the pinned sandbox and passed
+        env:
+          VERDICT: ${{ steps.sandbox.outputs.verdict }}
+          GUARD_SHA: ${{ steps.sandbox.outputs.sandbox-sha }}
+        run: |
+          [ "$VERDICT" = pass ] || { echo "::error::the sandbox self test did not pass"; exit 1; }
+          [ "$GUARD_SHA" = "$SANDBOX_REF" ] || { echo "::error::the sandbox guard ran another commit than SANDBOX_REF"; exit 1; }
+          [ "$(git -C msc rev-parse HEAD)" = "$SANDBOX_REF" ] || { echo "::error::the driver's sandbox checkout is not SANDBOX_REF"; exit 1; }
+      - id: run
+        name: Run the items in the sandbox
+        env:
+          SHARD_ID: ${{ steps.inputs.outputs.shard_id }}
+          ATTEMPT_ID: ${{ steps.inputs.outputs.attempt_id }}
+          ITEMS: ${{ steps.inputs.outputs.items }}
+        run: |
+          # --mck only when the checkout's own loop/prepare.sh fetched the resolver: this YAML runs from main while the
+          # lane code may be an older pinned commit (tool_sha), whose driver does not take --mck (WC14).
+          mck=(); if [ -d mck/corpus ]; then mck=(--mck mck); fi
+          node loop/run-items.mjs --msc msc "${mck[@]}" --cli "$MWSC_CLI_PATH" --seed toolqa/history/seed-v1.json --out "$RUNNER_TEMP/wc" --lane ci
+      - id: teardown
+        name: End the sandbox before anything is sealed
+        if: ${{ !cancelled() }}
+        run: loop/teardown.sh
+      - name: Loop unit tests against the pinned sandbox's and resolver's exports
+        if: ${{ !cancelled() }}
+        env:
+          MSC_DIR: msc
+          MCK_DIR: mck
+        run: node --test test/loop.test.mjs test/launch.test.mjs
+      - name: Keep the plaintext bundles and the shard record (7 days)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: loop-tier-proof-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
+          path: |
+            ${{ runner.temp }}/wc/
+          if-no-files-found: warn
+          retention-days: 7

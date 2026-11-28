@@ -1,0 +1,139 @@
+{
+  "format": "isokron-writecheck-launch-overrides/1",
+  "about": "What this lane supplies, per subject, that a registry entry or the seed does not say, so the server starts at all. Each entry is either an `exclude` (a subject this lane records as not testable, with a stable `code`, a reason the contract knows and a fault that is never the server's) or a `launch` (extra arguments, a different bin, environment values that point at files this repository ships under loop/sandbox/launch-files/, which the sandbox mounts read-only at /opt/surface/loop/launch-files/). A value here is a name, a path of ours or a dummy: never a credential, never a host. Egress stays denied. Change only by a reviewed commit; test/launch-overrides.test.mjs checks every entry.",
+  "subjects": {
+    "isokron-ai/sea-lite": {
+      "launch": {
+        "args": [
+          "serve"
+        ],
+        "install_scripts": true
+      },
+      "why": "sea-lite's bin is a command line with subcommands; its MCP server is `sea-lite serve` (stdio), and it opens a kronicle-lite store through better-sqlite3, a native module that needs its install script (the sandbox's build image)."
+    },
+    "isokron-ai/mcp-check": {
+      "launch": {
+        "bin": "mcp-check-server"
+      },
+      "why": "the package has two bins: mcp-check (a command line tool that prints its usage) and mcp-check-server (the MCP server)."
+    },
+    "isokron-ai/mcp-catalog-snap": {
+      "exclude": {
+        "reason": "policy_excluded",
+        "fault": "policy",
+        "code": "not_an_mcp_server"
+      },
+      "why": "mcp-catalog-snap is a command line tool that snapshots other servers; it is not an MCP server."
+    },
+    "isokron-ai/strapi-plugin-writesafe": {
+      "exclude": {
+        "reason": "policy_excluded",
+        "fault": "policy",
+        "code": "not_an_mcp_server"
+      },
+      "why": "a Strapi plugin: a library loaded by a Strapi application, with no server command of its own."
+    },
+    "grafana/mcp-grafana": {
+      "launch": {
+        "args": [
+          "-t",
+          "stdio"
+        ]
+      },
+      "why": "the image starts the SSE transport on port 8000 unless told `-t stdio`."
+    },
+    "tuananh/hyper-mcp": {
+      "exclude": {
+        "reason": "no_runnable_artifact",
+        "fault": "tool",
+        "code": "needs_local_plugin_fixture"
+      },
+      "why": "hyper-mcp serves the tools of the WebAssembly plugins in its config, which can be local files; with an empty plugin list tools/list gave nothing (28 Nov proof). We have no plugin fixture of our own to give it yet: our gap."
+    },
+    "containers/kubernetes-mcp-server": {
+      "launch": {
+        "env": {
+          "KUBECONFIG": "/opt/surface/loop/launch-files/kubeconfig.yaml"
+        }
+      },
+      "why": "the server refuses to start with no kubeconfig context; ours names a context whose cluster address is a loopback port nothing listens on, with a dummy token."
+    },
+    "apollographql/apollo-mcp-server": {
+      "launch": {
+        "args": [
+          "/opt/surface/loop/launch-files/apollo.yaml"
+        ],
+        "env": {
+          "APOLLO_MCP_TRANSPORT__TYPE": "stdio"
+        }
+      },
+      "why": "the image sets APOLLO_MCP_TRANSPORT__TYPE=streamable_http (and a 0.0.0.0 address) in its environment, which overrides the config file, so it bound :8000 whatever our config said (proof runs 100695848 and 104974739); the environment value here sets stdio, and the config points at a local schema file of ours with no endpoint."
+    },
+    "googleapis/mcp-toolbox": {
+      "exclude": {
+        "reason": "no_runnable_artifact",
+        "fault": "tool",
+        "code": "oci_host_not_allowed"
+      },
+      "why": "its image is on us-central1-docker.pkg.dev, which is not in the OCI host allowlist this lane shares with live-probe (docker.io, ghcr.io, quay.io, public.ecr.aws, mcr.microsoft.com, registry.gitlab.com), and its registry entry offers streamable HTTP only. The image does serve stdio (`--prebuilt sqlite --stdio`, README), so adding the host to the allowlist is our change to make."
+    },
+    "zerodha/kite-mcp-server": {
+      "exclude": {
+        "reason": "no_runnable_artifact",
+        "fault": "tool",
+        "code": "go_install_not_supported"
+      },
+      "why": "a Go server published as source only (no registry package, no image); this lane has no Go install path yet (our limit, being built). Its tools call hosted services with the user's own credentials, so a full write test also needs a mock; listing its tools does not."
+    },
+    "nguyenvanduocit/all-in-one-model-context-protocol": {
+      "exclude": {
+        "reason": "no_runnable_artifact",
+        "fault": "tool",
+        "code": "go_install_not_supported"
+      },
+      "why": "a Go server published as source only (no registry package, no image); this lane has no Go install path yet (our limit, being built). Its tools call hosted services with the user's own credentials, so a full write test also needs a mock; listing its tools does not."
+    },
+    "roblox/studio-rust-mcp-server": {
+      "exclude": {
+        "reason": "no_runnable_artifact",
+        "fault": "tool",
+        "code": "source_only_launch_unsupported"
+      },
+      "why": "an archived Rust server (publish = false) distributed as Windows and macOS release binaries and as source; this lane has no source or release-binary launch path for it. It serves stdio and lists its tools without Roblox Studio running, so tools/list is reachable once we can start it; its tools then need Studio, a desktop program."
+    },
+    "elastic/mcp-server-elasticsearch": {
+      "exclude": {
+        "reason": "no_runnable_artifact",
+        "fault": "tool",
+        "code": "source_only_launch_unsupported"
+      },
+      "why": "a deprecated Rust server distributed as an image from docker.elastic.co and AWS Marketplace (hosts outside this lane's OCI allowlist) and as source; not on crates.io. This lane has no launch path for it. Its tools also need an Elasticsearch (ES_URL), which the full mode's stand-in will supply."
+    },
+    "strowk/mcp-k8s-go": {
+      "launch": {
+        "kind": "npm",
+        "package": "@strowk/mcp-k8s",
+        "env": {
+          "KUBECONFIG": "/opt/surface/loop/launch-files/kubeconfig.yaml"
+        }
+      },
+      "why": "the seed lists no package, but the repository publishes @strowk/mcp-k8s on npm (a launcher of its Go binary); started with the same dummy kubeconfig as kubernetes-mcp-server."
+    },
+    "mark3labs/mcp-filesystem-server": {
+      "exclude": {
+        "reason": "no_runnable_artifact",
+        "fault": "tool",
+        "code": "go_install_not_supported"
+      },
+      "why": "a Go server published as source only (no registry package, no image): it runs fully on local files, but this lane has no Go install path yet (our limit, tracked as the next launch path after OCI and crates)."
+    },
+    "isaacphi/mcp-language-server": {
+      "exclude": {
+        "reason": "no_runnable_artifact",
+        "fault": "tool",
+        "code": "go_install_not_supported"
+      },
+      "why": "a Go server published as source only (no registry package, no image); it also needs a language server program to wrap. This lane has no Go install path yet (our limit)."
+    }
+  }
+}

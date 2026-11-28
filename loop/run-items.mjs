@@ -44,6 +44,7 @@ import { FIXTURE_MANIFEST, InputError, catalogManifest, checkId, isProofLane, lo
 import { ndjson, observations, planHash, publicSummary, summarize } from './summary.mjs';
 import { dockerPlatform, extractBinaryImage } from './binary-image.mjs';
 import { entryErrorCode, itemSkips, stagesRan } from './skips.mjs';
+import { applyLaunch, exclusionFor, loadOverrides, providedLaunch } from './overrides.mjs';
 import { BRIDGE_ENV_EMPTY, OCI_MAX_UNPACKED, cargoPlan, launchEnv, loadImages, loadMck, ociPullProblem, ociServer, portableBridge, resolveBeyondSeed } from './launch.mjs';
 import { BundleFiles, buildMeta, forgeryVerdict, knownBadVerdict, knownGoodVerdict, parseCollected, safeRawPath } from './bundle.mjs';
 
@@ -738,6 +739,11 @@ async function runControls(ctx) {
   return out;
 }
 
+/** The last 8 KB of a log file, or ''. */
+function lastBytes(f) {
+  try { const b = readFileSync(f); return b.subarray(Math.max(0, b.length - 8 * 1024)).toString('latin1'); } catch { return ''; }
+}
+
 /**
  * The last 64 KB of the server's stderr (R-WC-40): a split run's server.log (the server's own container), else the
  * logs of the CLI steps that failed (a fixture's server runs in the step's container). Empty when there is none.
@@ -750,11 +756,15 @@ export function lastStderr(stepDir, steps = []) {
 }
 
 async function runItem(ctx, item, deadline) {
-  const { shard, fixtures, seed } = ctx;
+  const { shard, fixtures, seed, overrides } = ctx;
   const startedAt = iso();
   const b = new BundleFiles();
   const skips = [];
   let resolved = resolveSubject(item.subject, { seed, fixtures }, item.fixture ?? null);
+  // A subject this lane records as not testable (loop/launch-overrides.json), with a stable code: never a fixture, never the server's fault.
+  if (!resolved.fixture) { const ex = exclusionFor(item.subject, overrides); if (ex) resolved = ex; }
+  // A package the seed does not list but the repository publishes (loop/launch-overrides.json), when nothing else gave a launch.
+  if (resolved.skip && !resolved.fixture) { const pl = providedLaunch(item.subject, overrides); if (pl) resolved = pl; }
   const notStarted = Date.now() >= deadline;
   // WC14: no npm or PyPI package, but an OCI image or a crate in the seed: the live-probe lane's resolver, else the
   // crate (loop/launch.mjs). Not when the shard's time is spent: then the item is not started, and is sent out again.
@@ -772,6 +782,7 @@ async function runItem(ctx, item, deadline) {
       }
     }
   }
+  if (resolved.launch) resolved = { ...resolved, launch: applyLaunch(item.subject, resolved.launch, overrides) };
   const driver = { format: 'isokron-writecheck-loop-driver/1', index: item.index, source: resolved.source ?? null, package: resolved.package ?? null, ...(resolved.choice ? { choice: resolved.choice } : {}), install: null, steps: [], error: null, evidence_missing: [], collected: null };
   let summary = null;
   let res = null;
@@ -808,7 +819,8 @@ async function runItem(ctx, item, deadline) {
     const installLog = res.install && !res.install.ok && existsSync(join(u.stepDir, 'docker.log')) ? readFileSync(join(u.stepDir, 'docker.log'), 'latin1') : '';
     // The server's stderr, read only to say which of our limits stopped a stage (R-WC-40); it stays in raw/.
     const serverLog = res.install?.ok && ['init', 'plan', 'catalog'].some((x) => !stages[x]) ? lastStderr(u.stepDir, res.steps) : '';
-    const s = itemSkips({ resolved, res, unit: u, stages, evidenceComplete, installLog, serverLog });
+    const initLog = existsSync(join(u.stepDir, 'init.log')) ? lastBytes(join(u.stepDir, 'init.log')) : '';
+    const s = itemSkips({ resolved, res, unit: u, stages, evidenceComplete, installLog, serverLog, initLog });
     skips.push(...s.skips);
     Object.assign(driver, s.notes);
     b.put('results/writecheck.json', json({ subject: item.subject, source: resolved.source, package: resolved.package, resolved_version: res.install?.resolved_version ?? null, ...publicSummary(summary) }));
@@ -886,9 +898,10 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   const mck = o.mck ? await loadMck(resolve(o.mck)) : null;
   const seed = loadSeed(o.seed);
   const fixtures = loadFixtures(o.fixtures);
+  const overrides = loadOverrides();
   const shard = new Shard({ o, M, env });
   shard.mck = mck;
-  const ctx = { shard, seed, fixtures, mck, lane: o.lane, cliRef: env.CLI_REF, sandboxRef: env.SANDBOX_REF, mckRef: mck ? env.MCP_CHECK_REF : null, actionRef };
+  const ctx = { shard, seed, fixtures, overrides, mck, lane: o.lane, cliRef: env.CLI_REF, sandboxRef: env.SANDBOX_REF, mckRef: mck ? env.MCP_CHECK_REF : null, actionRef };
   ctx.versions = { mcp_writecheck: env.CLI_REF, mcp_writecheck_action: actionRef, mcp_surface_corpus: env.SANDBOX_REF, gvisor: shard.cfg.release, ...(mck ? { mcp_check: env.MCP_CHECK_REF } : {}) };
   ctx.tools = toolsFor({ cliRef: env.CLI_REF, actionRef, sandboxRef: env.SANDBOX_REF, gvisor: shard.cfg.release, mckRef: ctx.mckRef });
   say(`writecheck shard: ${items.length} item(s)`);

@@ -146,6 +146,16 @@ export function stagesRan(steps = []) {
   return out;
 }
 
+/**
+ * The CLI's own refusal to draft a manifest (init exits 4: "no pair of read and update tools found in tools/list; write the
+ * manifest by hand"). init only drafts a manifest for a person; this lane's catalog manifest is its own and the plan and
+ * catalog stages do not read the draft. A server that answered tools/list and has no read/update pair (a search tool, an
+ * echo server) is not a server that failed to start: the refusal is never a skip, and never a start failure (R-WC-42).
+ */
+/** The CLI's exit status for that refusal (contract.mjs CLI: 4, a stage that stopped or failed); any other status is not it. */
+export const INIT_DECLINED_EXIT = 4;
+export const INIT_DECLINED = /^error: init: no pair of read and update tools found in tools\/list/m;
+
 /** A usage block: the command printed how to call it instead of answering as a stdio server. */
 const USAGE_TEXT = /^\s*usage:/im;
 /** The server's own words that it needs configuration we did not give it (mcp-check live-probe R-LP-44, the plain cases). */
@@ -189,9 +199,10 @@ export function stageFailure(step, serverLog = '') {
  *   evidenceComplete  false when the sandbox evidence is incomplete (the ci lane)
  *   installLog    the install's own output, for installFault
  *   serverLog     the server's stderr, for stageFailure
+ *   initLog       the init step's own output, for INIT_DECLINED
  * Returns { skips, notes } where notes holds skip_detail, init_detail, stage_detail and full_detail for logs/driver.json.
  */
-export function itemSkips({ resolved, notStarted = false, res = null, unit = {}, stages = {}, evidenceComplete = true, installLog = '', serverLog = '' }) {
+export function itemSkips({ resolved, notStarted = false, res = null, unit = {}, stages = {}, evidenceComplete = true, installLog = '', serverLog = '', initLog = '' }) {
   const skips = [];
   const notes = {};
   const add = (stage, reason, fault, extra = {}) => skips.push({ stage, reason, fault, ...extra, evidence: 'logs/driver.json' });
@@ -199,6 +210,8 @@ export function itemSkips({ resolved, notStarted = false, res = null, unit = {},
     const fault = resolved.skip.fault ?? REASON_FAULT[resolved.skip.reason];
     for (const st of ['install', 'init', 'plan', 'catalog']) add(st, resolved.skip.reason, fault, resolved.skip.retryable ? { retryable: true } : {});
     notes.skip_detail = resolved.skip.detail;
+    // A subject recorded as not testable here (loop/launch-overrides.json) carries its stable code for coverage to count.
+    if (resolved.skip.not_testable) notes.not_testable = resolved.skip.not_testable;
     return { skips, notes };
   }
   if (notStarted) {
@@ -232,6 +245,8 @@ export function itemSkips({ resolved, notStarted = false, res = null, unit = {},
     for (const st of ['init', 'plan', 'catalog']) {
       if (stages[st] || (st === 'init' && unit.init === false)) continue;
       const step = [...(res.steps ?? [])].reverse().find((x) => x?.step === st) ?? null;
+      // R-WC-42: the CLI answered: it reached the server, read tools/list and has nothing to draft. That is never a start failure (never timeout_start), whether or not plan and catalog ran; if they did not, they carry their own skips.
+      if (st === 'init' && step?.exit === INIT_DECLINED_EXIT && !step.timed_out && INIT_DECLINED.test(String(initLog))) { notes.init_code = 'no_read_update_pair'; notes.init_detail = 'init_declined: the CLI read tools/list and found no read and update pair to draft a manifest from'; continue; }
       const f = stageFailure(step, serverLog);
       add(st, f.reason, f.fault);
       failed[st] = f.detail;
