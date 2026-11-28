@@ -18,7 +18,7 @@ import { parseForward } from '../loop/sandbox/dogfood-unit.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const wf = (f) => readFileSync(join(root, '.github', 'workflows', f), 'utf8');
-const SANDBOX_REF = '78a7834cf028507b03e90e266b87bebeacfccd51';
+const SANDBOX_REF = '3738f2c3dabe03e943a1e5ff0a2441aca831e910';
 const SANDBOXED = ['dogfood-grafana.yml', 'dogfood-kronicle-lite.yml', 'dogfood-payload.yml', 'dogfood-sea-lite.yml', 'dogfood-writesafe.yml'];
 
 /** The jobs of a workflow as { name: text }. */
