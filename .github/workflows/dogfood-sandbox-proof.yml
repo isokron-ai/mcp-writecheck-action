@@ -1,0 +1,55 @@
+# Proof on pull requests that the dogfood T0 workers run their third-party code inside the sandbox: each sandboxed
+# worker file is called as it is (workflow_call), so the proof runs exactly the jobs the pump dispatches, from the pull
+# request's commit: the reusable sandbox-conformance job, the sandbox-guard action on each job's own runner, the
+# builds, services and CLI runs through dogfood/sbx.mjs, and t0-manifest, which builds the result bundle in a dry run
+# (proof: true: no encryption, no upload). Several of the worker files are switched off for dispatch; this file calls
+# them only on a pull request that touches what they run.
+#
+# dogfood-kubernetes.yml is not here: kind needs privileged Docker, which the sandbox cannot give, so that worker is
+# not sandboxed and is out of the t0-dogfood lane (see its header). tiny-tracker runs no third-party code.
+#
+# No secret, no environment, a token with read permissions only, no pull_request_target. A pull request from a fork
+# runs nothing here. The kill switch (LOOP_ENABLED) applies, as in every T0 worker.
+
+name: dogfood-sandbox-proof
+
+on:
+  pull_request:
+    paths:
+      - 'dogfood/**'
+      - 'loop/sandbox/**'
+      - 'loop/run-items.mjs'
+      - 'loop/bundle.mjs'
+      - 'loop/prepare.sh'
+      - 'loop/teardown.sh'
+      - 'loop/t0-bundle.mjs'
+      - '.github/workflows/dogfood-*.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: dogfood-sandbox-proof-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  kronicle-lite:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    uses: ./.github/workflows/dogfood-kronicle-lite.yml
+    with:
+      shard_id: proof-${{ github.run_id }}-kronicle-lite
+      attempt_id: proof-${{ github.run_id }}-kronicle-lite
+      fence: proof
+      run_key: proof
+      proof: true
+
+  writesafe:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    uses: ./.github/workflows/dogfood-writesafe.yml
+    with:
+      shard_id: proof-${{ github.run_id }}-writesafe
+      attempt_id: proof-${{ github.run_id }}-writesafe
+      fence: proof
+      run_key: proof
+      proof: true

@@ -75,6 +75,15 @@ on:
         required: false
         default: ''
 
+  # The pull-request proof (dogfood-sandbox-proof.yml) calls this same file: proof true builds the bundle in a dry run
+  # (no encryption, no upload). The dispatch inputs it does not pass are empty, so the pinned defaults run.
+  workflow_call:
+    inputs:
+      shard_id: { type: string, required: true }
+      attempt_id: { type: string, required: true }
+      fence: { type: string, required: true }
+      run_key: { type: string, required: true }
+      proof: { type: boolean, required: false, default: false }
 permissions: {}
 
 concurrency:
@@ -289,3 +298,4 @@ jobs:
           item-index: 0
           fence: ${{ needs.t0-start.outputs.fence }}
           run-key: ${{ needs.t0-start.outputs.run_key }}
+          dry-run: ${{ inputs.proof && 'true' || 'false' }}
