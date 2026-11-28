@@ -44,7 +44,8 @@ if (out) {
   // The login token comes from the server: refuse anything but a JWT before it reaches GITHUB_ENV.
   if (!/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(String(a.token))) throw new Error('the login token has an unexpected form');
   if (!/^[0-9a-f-]{36}$/.test(key)) throw new Error('the MCP key has an unexpected form');
-  for (const v of [key, a.token]) console.log(`::add-mask::${v}`);
+  // In the sandbox (SURFACE_SANDBOX) its output is data, printed with workflow commands off: a mask line would show the value.
+  if (!process.env.SURFACE_SANDBOX) for (const v of [key, a.token]) console.log(`::add-mask::${v}`);
   appendFileSync(out, `MWSV_MCP_KEY=${key}\nMWSV_JWT_A=${a.token}\n`);
 }
 console.log(`seeded: users editor-a, editor-b; MCP key for editor-a; tasks 1 (guard), 2 (archived); 6 bystanders`);

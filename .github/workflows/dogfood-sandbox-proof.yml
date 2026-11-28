@@ -53,3 +53,33 @@ jobs:
       fence: proof
       run_key: proof
       proof: true
+
+  sea-lite:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    uses: ./.github/workflows/dogfood-sea-lite.yml
+    with:
+      shard_id: proof-${{ github.run_id }}-sea-lite
+      attempt_id: proof-${{ github.run_id }}-sea-lite
+      fence: proof
+      run_key: proof
+      proof: true
+
+  grafana:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    uses: ./.github/workflows/dogfood-grafana.yml
+    with:
+      shard_id: proof-${{ github.run_id }}-grafana
+      attempt_id: proof-${{ github.run_id }}-grafana
+      fence: proof
+      run_key: proof
+      proof: true
+
+  payload:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    uses: ./.github/workflows/dogfood-payload.yml
+    with:
+      shard_id: proof-${{ github.run_id }}-payload
+      attempt_id: proof-${{ github.run_id }}-payload
+      fence: proof
+      run_key: proof
+      proof: true

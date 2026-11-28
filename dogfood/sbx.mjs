@@ -4,10 +4,10 @@
  * through here, into isokron-ai/mcp-surface-corpus's sandbox at SANDBOX_REF (the same library, images and networks as
  * corpus.yml's writecheck lane, loop/run-items.mjs), after that commit's sandbox-guard action has passed on this runner.
  *
- *   node dogfood/sbx.mjs up [--unit-image node22] [--fwd <port>=<last octet>:<port>]...
- *   node dogfood/sbx.mjs build --image <key> --hosts <h,h> --cwd <dir> [--native] [--env K=V]... [--minutes N] -- argv...
- *   node dogfood/sbx.mjs svc --name <n> --ip <last octet> (--image <key> | --image-ref <pinned ref>) [--cwd <dir>] [--wrap]
- *                            [--env K=V]... [--secret-env NAME=<file in the sandbox>]... [--ready <url path>] -- argv...
+ *   node dogfood/sbx.mjs up [--unit-image node22] [--fwd <port>=<last octet>:<port>]... [--pass NAME]...
+ *   node dogfood/sbx.mjs build --image <key> --hosts <h,h> --cwd <dir> [--native] [--env K=V]... [--path <dir>]... [--minutes N] -- argv...
+ *   node dogfood/sbx.mjs svc --name <n> --ip <last octet> (--image <key> [--cwd <dir>] [--wrap] | --image-ref <pinned ref> [--workdir <dir>] [--entrypoint <path>])
+ *                            [--env K=V]... [--secret-env NAME=<file in the sandbox>]... -- argv...
  *   node dogfood/sbx.mjs exec [--cwd <dir>] [--env K=V]... [--path <dir>]... [--bg] -- argv...
  *   node dogfood/sbx.mjs run --image <key> [--cwd <dir>] [--env K=V]... -- argv...
  *   node dogfood/sbx.mjs pull <file in the sandbox> <host file>
@@ -251,7 +251,7 @@ async function cmdUp(argv, env) {
 }
 
 async function cmdBuild(argv, env) {
-  const o = parseOpts(argv, { lists: ['env'], bools: ['native'] });
+  const o = parseOpts(argv, { lists: ['env', 'path'], bools: ['native'] });
   if (!o.cmd?.length || !o.image || !o.hosts || !o.cwd) throw new SbxError('build takes --image, --hosts, --cwd and -- argv');
   const st = loadState(env);
   const { M, shard } = await session(env, st, 'build');
@@ -295,7 +295,8 @@ async function cmdBuild(argv, env) {
     const name = `surface-${shard.runId}-${tag}-build`;
     const cidfile = join(shard.cidDir, `${name}.cid`);
     // The go image has no Node: its command runs as given. Every other build runs through dogfood-in.mjs (the temp folder).
-    const cmd = o.image === 'go' ? o.cmd : [...inArgs(st), ...o.cmd];
+    if (o.image === 'go' && o.path.length) throw new SbxError('--path needs dogfood-in.mjs, which the go image cannot run');
+    const cmd = o.image === 'go' ? o.cmd : [...inArgs(st, { path: o.path.map((x) => inMirror(x, st)) }), ...o.cmd];
     const bargv = M.sandboxRunArgs({ name, image, network: inNet, ip: M.NETS.install.target, resolv: 'install', cidfile, labels: shard.dk.labels(), cpus: shard.cpus, workdir: cwd, mounts: [{ src: st.wsVol, dst: st.mirror }, { src: shard.toolsVol, dst: TOOLS, ro: true }], env: benv, cmd });
     shard.writeSettings(bargv, { subject: tag, role: 'install' });
     const t0 = Date.now();
@@ -345,7 +346,9 @@ async function cmdSvc(argv, env) {
   await checkEnv(M, senv);
   const name = `surface-${shard.runId}-svc-${o.name}`;
   const cidfile = join(shard.cidDir, `${name}.cid`);
-  const cwd = o.cwd ? inMirror(o.cwd, st) : '/tmp';
+  // A service of our images works in the mirrored workspace; an image's own (Grafana, Postgres) in a plain folder of it.
+  const cwd = o.cwd ? inMirror(o.cwd, st) : o.workdir && o['image-ref'] && /^\/[A-Za-z0-9._/-]{1,120}$/.test(o.workdir) && !o.workdir.includes('..') ? o.workdir : '/tmp';
+  if (o.entrypoint && !/^\/[A-Za-z0-9._/-]{1,120}$/.test(o.entrypoint)) throw new SbxError('--entrypoint takes an absolute path');
   const mounts = [{ src: shard.toolsVol, dst: TOOLS, ro: true }, ...(o['image-ref'] ? [] : [{ src: st.wsVol, dst: st.mirror }])];
   const cmd = o.wrap ? [...inArgs(st), ...(o.cmd ?? [])] : (o.cmd ?? []);
   const sargv = M.sandboxRunArgs({ name, image, network: st.runNet, ip, resolv: 'run', cidfile, detach: true, labels: shard.dk.labels(), cpus: shard.cpus, workdir: cwd, mounts, env: senv, cmd, ...(o.entrypoint ? { entrypoint: o.entrypoint } : {}) });
@@ -406,6 +409,11 @@ async function collect(st, shard, root) {
   return parseCollected(c.stdout.toString('utf8'));
 }
 
+/** Prints one file of the work volume: only a regular file whose real path is the one asked for (no link on the way). */
+export const PULL_JS = `const fs = require('fs'); const p = process.argv[1];
+const st = fs.lstatSync(p); if (!st.isFile() || fs.realpathSync(p) !== p || st.size > 16 * 1024 * 1024) process.exit(3);
+process.stdout.write(fs.readFileSync(p));`;
+
 async function cmdPull(argv, env) {
   const [from, to] = argv;
   if (!from || !to) throw new SbxError('pull takes <file in the sandbox> <host file>');
@@ -414,9 +422,10 @@ async function cmdPull(argv, env) {
   const src = inMirror(from, st);
   const dest = resolve(to);
   if (existsSync(dest)) throw new SbxError(`${to} exists already`);
-  const got = await collect(st, shard, dirname(src));
-  const data = got.files.get(src.slice(dirname(src).length + 1));
-  if (!data) throw new SbxError(`${from} did not come back (not a regular file, or missing)`);
+  // Our helper (no network, the volume read-only) reads one regular file, never through a link, at most 16 MiB.
+  const r = await shard.helper(null, { mounts: [{ src: st.wsVol, dst: st.mirror, ro: true }], cmd: ['node', '-e', PULL_JS, src] }, { keepStdout: true, logStdout: false, cap: 16 * 1024 * 1024 + 1024, deadline: Date.now() + 120_000 });
+  if (r.exit !== 0 || r.stdout_truncated) throw new SbxError(`${from} did not come back (not a regular file, a link, missing, or over 16 MiB)`);
+  const data = r.stdout;
   mkdirSync(dirname(dest), { recursive: true });
   writeFileSync(dest, data, { flag: 'wx' });
   say(`pulled ${from} (${data.length} bytes) as data`);

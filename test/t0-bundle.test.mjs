@@ -12,7 +12,9 @@ import { build, infraOnly, observe, stemFromRef, workResults } from '../loop/t0-
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const dir = join(root, '.github', 'workflows');
-const workers = readdirSync(dir).filter((f) => /^(dogfood-.+|selftest)\.yml$/.test(f)).sort();
+// dogfood-kubernetes.yml is not a T0 worker: kind keeps it outside the sandbox, so it builds no bundle (R-DSB-03);
+// dogfood-sandbox-proof.yml only calls the workers on a pull request.
+const workers = readdirSync(dir).filter((f) => /^(dogfood-.+|selftest)\.yml$/.test(f) && !['dogfood-kubernetes.yml', 'dogfood-sandbox-proof.yml'].includes(f)).sort();
 const needs = (...r) => JSON.stringify({ 't0-start': { result: 'success', outputs: {} }, ...Object.fromEntries(r.map((x, i) => [`job${i}`, { result: x }])) });
 const ENV = { GITHUB_REPOSITORY: 'isokron-ai/mcp-writecheck-action', GITHUB_WORKFLOW_REF: 'isokron-ai/mcp-writecheck-action/.github/workflows/dogfood-writesafe.yml@refs/heads/main', GITHUB_SHA: 'c'.repeat(40) };
 
@@ -55,7 +57,7 @@ test('R-TSW-04: the subject is the repository and the workflow file stem; a ref 
 });
 
 test('R-TSW-05: every T0 worker ends with a t0-manifest job that waits for every other job and runs none of the workflow\'s code', () => {
-  assert.equal(workers.length, 8, 'selftest and seven dogfood workers');
+  assert.equal(workers.length, 7, 'selftest and six dogfood workers');
   for (const f of workers) {
     const text = readFileSync(join(dir, f), 'utf8');
     const jobs = [...text.slice(text.indexOf('\njobs:')).matchAll(/^  ([a-z0-9_-]+):\s*$/gm)].map((m) => m[1]);
@@ -75,7 +77,7 @@ test('R-TSW-05: every T0 worker ends with a t0-manifest job that waits for every
 });
 
 test('R-TSW-06: the workers\' subjects match the names the pump dispatches (pump/workflows.json t0-self in tool-qa)', () => {
-  const expected = ['dogfood-grafana', 'dogfood-kronicle-lite', 'dogfood-kubernetes', 'dogfood-payload', 'dogfood-sea-lite', 'dogfood-tiny-tracker', 'dogfood-writesafe', 'selftest'];
+  const expected = ['dogfood-grafana', 'dogfood-kronicle-lite', 'dogfood-payload', 'dogfood-sea-lite', 'dogfood-tiny-tracker', 'dogfood-writesafe', 'selftest'];
   assert.deepEqual(workers.map((f) => f.replace(/\.yml$/, '')), expected);
   for (const stem of expected) assert.equal(build({ ...ENV, GITHUB_WORKFLOW_REF: `isokron-ai/mcp-writecheck-action/.github/workflows/${stem}.yml@refs/heads/main`, NEEDS: needs('success') }).meta.subject.id, `isokron-ai/mcp-writecheck-action.${stem}`);
 });
@@ -125,7 +127,7 @@ test('R-TSW-09: the pnpm download and its integrity check are separate steps in 
   assert.equal(fetches.length, 3, 'each of the three jobs downloads, then checks and installs');
   const sh = readFileSync(join(root, 'dogfood', 'install-pnpm.sh'), 'utf8');
   assert.match(sh, /fetch\)[\s\S]*npm pack/);
-  assert.match(sh, /install\)[\s\S]*integrity mismatch[\s\S]*npm install --global/);
+  assert.match(sh, /install\)[\s\S]*integrity mismatch[\s\S]*tar -xzf/);
   assert.doesNotMatch(sh.slice(sh.indexOf('fetch)'), sh.indexOf('install)')), /integrity mismatch/, 'the download step never reports an integrity refusal');
 });
 
