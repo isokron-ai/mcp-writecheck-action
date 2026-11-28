@@ -132,6 +132,14 @@ jobs:
           (cd tt/examples/tiny-tracker && npm ci --ignore-scripts --no-audit --no-fund && npm run build)
           git -C mws show "$SPEC_REF:spec/mws.md" > spec/mws.md
 
+      # The unit tests below run with CI and CLI_DIR set, which makes the PostgreSQL fixture's live tests required
+      # (test/pg-fixture.test.mjs, R-WC-17): its dependencies from the committed lockfile (every package from
+      # registry.npmjs.org with a sha512; the platform package's install script links the PostgreSQL binaries), as test.yml's
+      # pg-fixture job installs them, after the CLI was built.
+      - name: Install the PostgreSQL fixture's dependencies
+        working-directory: action/loop/fixtures/pg-tracker
+        run: npm ci --omit=dev --no-audit --no-fund --loglevel=error
+
       - name: Local test against tiny-tracker
         run: |
           set -o pipefail
