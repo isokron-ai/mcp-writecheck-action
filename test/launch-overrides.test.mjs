@@ -76,12 +76,13 @@ test('R-WC-43: a subject this lane cannot test has a stable code and a fault tha
   assert.throws(() => loadOverrides(write(doc({ 'a/b': { ...ok, exclude: { ...ok.exclude, code: 'Hosted Backend' } } }))), /stable snake_case/);
   assert.throws(() => loadOverrides(write(doc({ 'a/b': { launch: { env: { API_URL: 'https://example.com' } }, why: 'a long enough reason' } }))), /names a host/);
   assert.throws(() => loadOverrides(write(doc({ 'a/b': { launch: { args: ['--x'] }, exclude: ok.exclude, why: 'a long enough reason' } }))), /exactly one/);
+  assert.throws(() => loadOverrides(write(doc({ 'a/b': { launch: { install_scripts: false }, why: 'a long enough reason' } }))), /install_scripts/);
   assert.throws(() => loadOverrides(write(doc({ 'a/b': { launch: { args: ['/opt/surface/loop/launch-files/missing.json'] }, why: 'a long enough reason' } }))), /not a file of this repository/);
 });
 
 test('R-WC-44: the arguments, bin and files that make the T0 and T1 servers start are supplied by name, never a credential or a host', () => {
   const base = { kind: 'npm', package: 'x', version: 'latest' };
-  assert.deepEqual(applyLaunch('isokron-ai/sea-lite', base, ov), { ...base, args: ['serve'] });
+  assert.deepEqual(applyLaunch('isokron-ai/sea-lite', base, ov), { ...base, args: ['serve'], install_scripts: true });
   assert.deepEqual(applyLaunch('isokron-ai/mcp-check', base, ov), { ...base, bin: 'mcp-check-server' });
   assert.deepEqual(applyLaunch('grafana/mcp-grafana', { kind: 'docker', args: ['--address', ':8000'] }, ov).args, ['-t', 'stdio']);
   assert.deepEqual(applyLaunch('tuananh/hyper-mcp', { kind: 'docker' }, ov).args, ['--config-file', '/opt/surface/loop/launch-files/hyper-mcp.json']);

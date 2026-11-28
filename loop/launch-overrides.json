@@ -1,14 +1,15 @@
 {
   "format": "isokron-writecheck-launch-overrides/1",
-  "about": "What this lane supplies, per subject, that a registry entry or the seed does not say, so the server starts at all. Each entry is either an `exclude` (a subject this lane records as not testable, with a stable `code`, a reason the contract knows and a fault that is never the server's) or a `launch` (extra arguments, a different bin, environment values that point at files this repository ships under loop/launch-files/, which the sandbox mounts read-only at /opt/surface/loop/launch-files/). A value here is a name, a path of ours or a dummy: never a credential, never a host. Egress stays denied. Change only by a reviewed commit; test/launch-overrides.test.mjs checks every entry.",
+  "about": "What this lane supplies, per subject, that a registry entry or the seed does not say, so the server starts at all. Each entry is either an `exclude` (a subject this lane records as not testable, with a stable `code`, a reason the contract knows and a fault that is never the server's) or a `launch` (extra arguments, a different bin, environment values that point at files this repository ships under loop/sandbox/launch-files/, which the sandbox mounts read-only at /opt/surface/loop/launch-files/). A value here is a name, a path of ours or a dummy: never a credential, never a host. Egress stays denied. Change only by a reviewed commit; test/launch-overrides.test.mjs checks every entry.",
   "subjects": {
     "isokron-ai/sea-lite": {
       "launch": {
         "args": [
           "serve"
-        ]
+        ],
+        "install_scripts": true
       },
-      "why": "sea-lite's bin is a command line with subcommands; its MCP server is `sea-lite serve` (stdio)."
+      "why": "sea-lite's bin is a command line with subcommands; its MCP server is `sea-lite serve` (stdio), and it opens a kronicle-lite store through better-sqlite3, a native module that needs its install script (the sandbox's build image)."
     },
     "isokron-ai/mcp-check": {
       "launch": {

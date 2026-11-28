@@ -4,7 +4,7 @@
 // An exclusion names a reason the contract knows (tool-qa worker-kit SKIP_REASONS), a fault that is never the server's
 // (policy: we chose not to run it, or our own limit) and a stable `code` that coverage can count separately. A launch
 // override adds arguments, names another bin, or sets environment values that point at files of this repository under
-// loop/launch-files/ (mounted read-only at /opt/surface/loop/launch-files/): never a credential, never a host.
+// loop/sandbox/launch-files/, the tools volume's loop/ (mounted read-only at /opt/surface/loop/launch-files/): never a credential, never a host.
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -40,15 +40,16 @@ export function loadOverrides(file = join(here, 'launch-overrides.json')) {
       if (Object.keys(x).some((k) => !['reason', 'fault', 'code'].includes(k))) bad('unknown exclude key');
     } else {
       const l = o.launch;
-      if (Object.keys(l).some((k) => !['args', 'bin', 'env'].includes(k))) bad('unknown launch key');
+      if (Object.keys(l).some((k) => !['args', 'bin', 'env', 'install_scripts'].includes(k))) bad('unknown launch key');
       if (l.args !== undefined && !(Array.isArray(l.args) && l.args.length <= 20 && l.args.every(ARG))) bad('args must be a short list of plain strings');
       if (l.bin !== undefined && !BIN.test(l.bin)) bad('bin is not a bin name');
+      if (l.install_scripts !== undefined && l.install_scripts !== true) bad('install_scripts is true or absent');
       for (const [k, v] of Object.entries(l.env ?? {})) {
         if (!ENV_NAME.test(k) || typeof v !== 'string' || !ARG(v)) bad(`env ${k} is not a name and a plain value`);
         if (/^[a-z][a-z0-9+.-]*:\/\//i.test(v)) bad(`env ${k} names a host; values point at files of ours or are dummies`);
       }
       for (const a of [...(l.args ?? []), ...Object.values(l.env ?? {})]) {
-        if (a.startsWith(`${LAUNCH_FILES_MOUNT}/`) && !existsSync(join(here, 'launch-files', a.slice(LAUNCH_FILES_MOUNT.length + 1)))) bad(`${a} is not a file of this repository`);
+        if (a.startsWith(`${LAUNCH_FILES_MOUNT}/`) && !existsSync(join(here, 'sandbox', 'launch-files', a.slice(LAUNCH_FILES_MOUNT.length + 1)))) bad(`${a} is not a file of this repository`);
       }
     }
     out.set(subject, o);
@@ -69,6 +70,7 @@ export function applyLaunch(subject, launch, overrides) {
   if (!l || !launch) return launch;
   const out = { ...launch };
   if (l.bin) out.bin = l.bin;
+  if (l.install_scripts) out.install_scripts = true;
   if (l.args) out.args = [...l.args];
   if (l.env) out.env = { ...(launch.env ?? {}), ...l.env };
   return out;
