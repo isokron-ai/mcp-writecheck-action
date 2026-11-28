@@ -60,6 +60,11 @@ on:
         description: "Accepted plan hashes for that CLI, after reading the plans: space-separated job=hash pairs (job names as in this file)."
         required: false
         default: ''
+      proof:
+        description: Build the result bundle in a dry run (no encryption, no upload). Use for a dispatch no pump attempt issued.
+        type: boolean
+        required: false
+        default: false
 
   # The pull-request proof (dogfood-sandbox-proof.yml) calls this same file: proof true builds the bundle in a dry run
   # (no encryption, no upload). The dispatch inputs it does not pass are empty, so the pinned defaults run.

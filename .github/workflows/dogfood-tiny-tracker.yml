@@ -351,7 +351,7 @@ jobs:
     timeout-minutes: 15
     strategy:
       fail-fast: false
-      max-parallel: 20
+      max-parallel: 5
       matrix:
         include: ${{ fromJSON(needs.defect-list.outputs.cells) }}
     env:
@@ -392,6 +392,7 @@ jobs:
       - name: Compare the plan hash with the accepted one
         env:
           SEEN: ${{ steps.plan.outputs.plan-hash }}
+          HASH_CELL: ${{ matrix.defect }}
         run: dogfood/check-plan-hash.sh "$PLAN_HASH" "$SEEN"
       - id: full
         name: Full run (fail-on none; the next step decides)
