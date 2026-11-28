@@ -59,12 +59,12 @@
       "why": "the server refuses to start with no kubeconfig context; ours names a context whose cluster address is a loopback port nothing listens on, with a dummy token."
     },
     "apollographql/apollo-mcp-server": {
-      "launch": {
-        "args": [
-          "/opt/surface/loop/launch-files/apollo.yaml"
-        ]
+      "exclude": {
+        "reason": "heavy_backend",
+        "fault": "policy",
+        "code": "awaiting_standin_graphql"
       },
-      "why": "the image reads /config.yaml and exits when it is missing; ours points the server at a local schema file and no endpoint."
+      "why": "serves GraphQL operations against a GraphQL endpoint it is configured with; two tries of ours at a config that starts it over stdio without one ended on its default HTTP listener (28 Nov proof runs 100695848, 104974739), so it waits for a GraphQL stand-in and a known-good config."
     },
     "googleapis/mcp-toolbox": {
       "exclude": {

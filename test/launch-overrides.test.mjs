@@ -59,6 +59,7 @@ test('R-WC-43: a subject this lane cannot test has a stable code and a fault tha
     'googleapis/mcp-toolbox': 'heavy_backend/policy/awaiting_standin_database',
     'zerodha/kite-mcp-server': 'policy_excluded/policy/not_testable_hosted_backend',
     'tuananh/hyper-mcp': 'policy_excluded/policy/not_testable_needs_remote_plugins',
+    'apollographql/apollo-mcp-server': 'heavy_backend/policy/awaiting_standin_graphql',
     'nguyenvanduocit/all-in-one-model-context-protocol': 'policy_excluded/policy/not_testable_hosted_backend',
     'roblox/studio-rust-mcp-server': 'policy_excluded/policy/not_testable_desktop_backend',
     'elastic/mcp-server-elasticsearch': 'heavy_backend/policy/awaiting_standin_elasticsearch',
@@ -95,7 +96,6 @@ test('R-WC-44: the arguments, bin and files that make the T0 and T1 servers star
   assert.deepEqual(applyLaunch('isokron-ai/mcp-check', base, ov), { ...base, bin: 'mcp-check-server' });
   assert.deepEqual(applyLaunch('grafana/mcp-grafana', { kind: 'docker', args: ['--address', ':8000'] }, ov).args, ['-t', 'stdio']);
   assert.deepEqual(applyLaunch('containers/kubernetes-mcp-server', base, ov).env, { KUBECONFIG: '/opt/surface/loop/launch-files/kubeconfig.yaml' });
-  assert.deepEqual(applyLaunch('apollographql/apollo-mcp-server', { kind: 'docker' }, ov).args, ['/opt/surface/loop/launch-files/apollo.yaml']);
   // The registry's own environment is kept and ours is added; an unlisted subject is unchanged.
   assert.deepEqual(applyLaunch('containers/kubernetes-mcp-server', { ...base, env: { A: null } }, ov).env, { A: null, KUBECONFIG: '/opt/surface/loop/launch-files/kubeconfig.yaml' });
   assert.equal(applyLaunch('someone/else', base, ov), base);
