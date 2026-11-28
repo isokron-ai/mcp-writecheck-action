@@ -188,7 +188,8 @@ test('R-WCF-04: the thin declaration holds only what tools/list and the stand-in
   assert.equal(pickReader(readTools(CATALOG), ts.def.guard.address).name, 'documents.get');
   // tools/list is the target's data: names that are not plain are dropped, schemas only as types.
   const hostile = readTools({ tools: [{ name: 'documents.get"\n  evil: true', inputSchema: CATALOG.tools[2].inputSchema, annotations: { readOnlyHint: true } }, { name: 'x', inputSchema: { properties: { 'a"b': { type: 'string' }, ok: { type: { evil: 1 } } }, required: ['a"b', 'ok', 'nope'] } }] });
-  assert.deepEqual(hostile, [{ name: 'x', readOnly: false, props: { ok: null }, required: ['ok'] }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(hostile)), [{ name: 'x', readOnly: false, props: { ok: null }, required: ['ok'] }]);
+  assert.equal(Object.getPrototypeOf(hostile[0].props), null, 'no property name can reach a prototype');
   assert.throws(() => decl(readTools(CATALOG), { marker: 'x"; evil' }), /marker/);
 });
 
