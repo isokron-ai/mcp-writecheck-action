@@ -33,7 +33,7 @@ inputs:
       The commit of mcp-writecheck to fetch and build. Use a full 40-character SHA. The default
       is the commit this version of the action was written and tested against.
     required: false
-    default: 3af41c6fb79d66afdea41ebcabc6f7fc18e77c6a
+    default: 942c079bd7980f0a2f135312583270c31aff202e
   confirm-target:
     description: Mode full only, required there. The manifest's target.confirm, typed back.
     required: false
