@@ -6,13 +6,13 @@
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { PULL_JS, cliOutDirs, envPairs, inMirror, mirrorRoot, serviceIp, writeCollected } from '../dogfood/sbx.mjs';
+import { PULL_JS, SbxError, checkSandboxCheckout, cliOutDirs, envPairs, execArgv, inMirror, mirrorRoot, parseHosts, serviceIp, stream, whilePaused, workMounts, writeBack, writeCollected } from '../dogfood/sbx.mjs';
 import { commandEnv, readEnvFile } from '../loop/sandbox/dogfood-in.mjs';
 import { parseForward } from '../loop/sandbox/dogfood-unit.mjs';
 
@@ -48,16 +48,47 @@ function runLines(job) {
   return out;
 }
 
-/** What a work job may run on the runner: our own scripts, the sandbox driver, and checks that read results. */
-const HOST_OK = [
-  /^dogfood\/(cli-ref|check-ref|build-cli|sandbox-guarded)\.sh$/, /^loop\/prepare\.sh sandbox$/, /^loop\/teardown\.sh$/,
-  /^node dogfood\/sbx\.mjs (up|build|svc|exec|run|pull|logs|down)\b/, /^dogfood\/grafana\/sandbox\.sh (start|snap "\$RUNNER_TEMP\/snap-(before|after)\.json")$/,
-  /^dogfood\/check-plan-hash\.sh /, /^node dogfood\/expect-violations\.mjs /, /^node dogfood\/payload\/expect\.mjs /,
-  /^dogfood\/sea-lite\/expect-fixed-cli-bugs\.sh$/, /^dogfood\/kronicle-lite\/(check-on-main|candidate-manifest)\.sh$/,
-  /^dogfood\/install-pnpm\.sh (fetch|install)$/, /^dogfood\/grafana\/compare-snaps\.py "\$RUNNER_TEMP\/snap-before\.json" "\$RUNNER_TEMP\/snap-after\.json"$/,
+/**
+ * Whether a command line has shell syntax that runs more than its first command: an unquoted ; & | < > ( ) or backquote,
+ * or a command substitution ($( or a backquote) anywhere outside single quotes. A `node dogfood/sbx.mjs up && npm ci`
+ * would otherwise pass for a sandbox step.
+ */
+export function shellChained(line) {
+  let q = null;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (q === "'") { if (c === "'") q = null; continue; }
+    if (c === '\\') { i++; continue; }
+    if (c === '`' || (c === '$' && line[i + 1] === '(')) return true;
+    if (q === '"') { if (c === '"') q = null; continue; }
+    if (c === "'" || c === '"') { q = c; continue; }
+    if (';&|<>()\n'.includes(c)) return true;
+  }
+  return q !== null;
+}
+
+/** What a work job may run on the runner, each line whole: our own scripts, the sandbox driver, checks that read results. */
+const HOST_EXACT = new Set([
+  'dogfood/cli-ref.sh', 'dogfood/check-ref.sh', 'dogfood/build-cli.sh', 'dogfood/sandbox-guarded.sh', 'loop/prepare.sh sandbox', 'loop/teardown.sh',
+  'dogfood/install-pnpm.sh fetch', 'dogfood/install-pnpm.sh install', 'dogfood/kronicle-lite/candidate-manifest.sh', 'dogfood/kronicle-lite/check-on-main.sh',
+  'dogfood/sea-lite/expect-fixed-cli-bugs.sh', 'dogfood/grafana/sandbox.sh start',
+  'dogfood/grafana/compare-snaps.py "$RUNNER_TEMP/snap-before.json" "$RUNNER_TEMP/snap-after.json"',
   // grafana's vendor job: the upstream image is created, never started, and its binary copied out as data.
-  /^mkdir -p grafana-bin$/, /^docker (create --name dogfood-grafana-vendor "\$VENDOR_IMAGE" > \/dev\/null|cp dogfood-grafana-vendor:\/app\/mcp-grafana grafana-bin\/mcp-grafana-vendor|rm dogfood-grafana-vendor > \/dev\/null)$/,
+  'mkdir -p grafana-bin', 'docker create --name dogfood-grafana-vendor "$VENDOR_IMAGE" > /dev/null',
+  'docker cp dogfood-grafana-vendor:/app/mcp-grafana grafana-bin/mcp-grafana-vendor', 'docker rm dogfood-grafana-vendor > /dev/null',
+]);
+const HOST_OK = [
+  /^dogfood\/check-plan-hash\.sh "\$PLAN_HASH" "\$SEEN" [a-z-]+$/,
+  /^dogfood\/grafana\/sandbox\.sh snap "\$RUNNER_TEMP\/snap-(?:before|after)\.json"$/,
+  /^node dogfood\/expect-violations\.mjs (?:"\$KL_KNOWN"|dogfood\/[a-z-]+\/known-violations\.txt) "\$RESULTS"$/,
+  /^node dogfood\/payload\/expect\.mjs "\$RESULTS\/results\.json" dogfood\/payload\/expected-violations\.[a-z.-]+\.txt$/,
+  // The driver: what follows its `--` runs in the sandbox; shellChained refuses anything the runner's shell would run besides.
+  /^node dogfood\/sbx\.mjs (?:up|down|logs|build|svc|exec|run|pull)(?: .*)?$/,
 ];
+/** A command line a work job may run on the runner. */
+export const hostAllowed = (l) => HOST_EXACT.has(l) || (!shellChained(l) && HOST_OK.some((re) => re.test(l)));
+/** The only actions a work job uses: checkout and setup-node at full commits, this action (./), and the sandbox guard. */
+const USES_OK = [/^actions\/(?:checkout|setup-node)@[0-9a-f]{40}$/, /^\.\/$/, new RegExp(`^isokron-ai/mcp-surface-corpus/sandbox-guard@${SANDBOX_REF}$`)];
 const sbxStep = /node dogfood\/sbx\.mjs (?:build|svc|exec|run) |dogfood\/grafana\/sandbox\.sh start/;
 
 /** Every reason a sandboxed worker's text breaks the rules; empty when it keeps them. */
@@ -84,8 +115,9 @@ export function workerProblems(text) {
     if (first < 0 || first < order[3]) p.push(`${j}: a sandbox step before up, or none`);
     for (const m of t.matchAll(/uses: \.\/\n\s+with:\n((?:\s{10}.*\n)+)/g)) if (!/cli-path: dogfood\/sbx-cli\n/.test(m[1])) p.push(`${j}: an action step whose CLI is not the sandboxed one`);
     if (!/- name: End the sandbox\n\s+if: always\(\)\n\s+run: node dogfood\/sbx\.mjs down\n\s+- name: Stop Docker, and check nothing of the sandbox is left\n\s+if: always\(\)\n\s+run: loop\/teardown\.sh\n\s*(?:#[^\n]*\n\s*)*$/.test(t)) p.push(`${j}: does not end with down, then teardown`);
-    if (/working-directory:|actions\/setup-go@|\bservices:/.test(t)) p.push(`${j}: a step that builds or serves on the runner`);
-    for (const l of runLines(t)) if (!HOST_OK.some((re) => re.test(l))) p.push(`${j}: runs on the runner: ${l.slice(0, 80)}`);
+    if (/working-directory:|\bservices:|\n\s+shell:|\bcontainer:/.test(t)) p.push(`${j}: a step that builds, serves or picks its shell on the runner`);
+    for (const l of runLines(t)) if (!hostAllowed(l)) p.push(`${j}: runs on the runner: ${l.slice(0, 80)}`);
+    for (const m of t.matchAll(/^\s*(?:- )?uses:\s*(\S+)/gm)) if (!USES_OK.some((re) => re.test(m[1]))) p.push(`${j}: uses ${m[1].slice(0, 60)}`);
   }
   const man = J['t0-manifest'] ?? '';
   if (!new RegExp(`\\n    needs: \\[t0-start, conformance, ${work.join(', ')}\\]\\n`).test(man)) p.push('t0-manifest: does not wait for conformance and every work job');
@@ -116,9 +148,16 @@ test('R-DSB-01: each protection taken out of a worker is refused (mutations)', (
     'a real upload in the proof': kl.replace("dry-run: ${{ inputs.proof && 'true' || 'false' }}", "dry-run: 'false'"),
     'setup-go on the runner': wf('dogfood-grafana.yml').replace('      - name: Build the research build (in the sandbox)\n', '      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n      - name: Build the research build (in the sandbox)\n'),
     'pnpm on the runner': wf('dogfood-payload.yml').replace('run: dogfood/install-pnpm.sh install', 'run: dogfood/install-pnpm.sh install && pnpm --version'),
+    // The review's probes of #80 (all passed the old check).
+    'a chain after up': kl.replace('run: node dogfood/sbx.mjs up\n', 'run: node dogfood/sbx.mjs up && (cd kl && npm ci --no-audit)\n'),
+    'a command after the hash check': kl.replace('run: dogfood/check-plan-hash.sh "$PLAN_HASH" "$SEEN" own', 'run: dogfood/check-plan-hash.sh "$PLAN_HASH" "$SEEN" own ; node kl/dist/index.js'),
+    'a docker action': kl.replace('      - name: Sandbox up (the workspace mirrored into it)\n', '      - uses: docker://node:22\n      - name: Sandbox up (the workspace mirrored into it)\n'),
+    'a local action of the subject': kl.replace('      - name: Sandbox up (the workspace mirrored into it)\n', '      - uses: ./dogfood/kronicle-lite\n      - name: Sandbox up (the workspace mirrored into it)\n'),
+    'a substitution in a driver line': kl.replace('run: node dogfood/sbx.mjs down', 'run: node dogfood/sbx.mjs down "$(node kl/dist/cli.js)"'),
+    'a shell of its own': kl.replace('        run: dogfood/kronicle-lite/check-on-main.sh\n', '        shell: node {0}\n        run: dogfood/kronicle-lite/check-on-main.sh\n'),
   };
   for (const [what, text] of Object.entries(mutations)) {
-    assert.notEqual(text, what.includes('setup-go') ? wf('dogfood-grafana.yml') : what.includes('pnpm') ? wf('dogfood-payload.yml') : kl, `${what}: the mutation applies`);
+    assert.notEqual(text, what.includes('setup-go') ? wf('dogfood-grafana.yml') : what.includes('pnpm on') ? wf('dogfood-payload.yml') : kl, `${what}: the mutation applies`);
     assert.ok(workerProblems(text).length > 0, `${what}: refused`);
   }
 });
@@ -225,7 +264,9 @@ test('R-DSB-04: the driver starts containers only through the sandbox library\'s
   assert.match(src, /M\.sandboxRunArgs\(\{ name, image: shard\.images\[key\]/, 'the unit');
   assert.match(src, /M\.sandboxRunArgs\(\{ name, image, network: inNet, ip: M\.NETS\.install\.target/, 'builds on the install network');
   assert.match(src, /M\.sandboxRunArgs\(\{ name, image, network: st\.runNet, ip, resolv: 'run'/, 'services on the run network');
-  assert.match(src, /M\.targetEnvProblems\(env, process\.env\)/, 'every environment is checked by the sandbox\'s own rule');
+  assert.match(src, /M\.targetEnvProblems\(env, hostEnv\)/, 'every environment is checked by the sandbox\'s own rule');
+  // The build's, a service's, a run's and every unit command's (execArgv, R-DSB-07) environment.
+  for (const v of ['benv', 'senv', 'renv', 'all']) assert.match(src, new RegExp(`checkEnv\\(M, ${v}[,)]`), v);
 });
 
 test('R-DSB-05: inside the sandbox, a step\'s env file cannot set a loader, a runner name or PATH, and the unit forwards only to the run network', async () => {
@@ -261,4 +302,111 @@ test('R-DSB-06: pnpm is only unpacked on the runner, never run there; the sandbo
   for (const job of Object.values(jobs(wf('dogfood-payload.yml'))).filter((t) => t.includes('install-pnpm.sh install'))) {
     assert.match(job, /node dogfood\/sbx\.mjs build [^\n]*--path \.sbx-pnpm\/bin [^\n]*-- dogfood\/payload\/stack\.sh build /);
   }
+});
+
+const tmp = () => realpathSync(mkdtempSync(join(tmpdir(), 'dsb-')));
+const ST = { mirror: '/home/runner/work', workspace: '/home/runner/work/a/a', temp: '/home/runner/work/_temp', envFile: '/home/runner/work/_temp/sbx-env/env', unit: { name: 'surface-x-unit' }, pass: ['GRAFANA_URL'], wsVol: 'surface-x-ws', harnessVol: 'surface-x-harness' };
+
+test('R-DSB-07: every command in the unit passes the sandbox\'s own environment check first, the job\'s passed names too', () => {
+  const ok = { targetEnvProblems: () => [] };
+  const argv = execArgv(ST, ok, { cwd: ST.workspace, env: { A: 'b' }, pidfile: '/tmp/p', cmd: ['node', 'x.js'] }, { GRAFANA_URL: 'http://127.0.0.1:4930' });
+  assert.deepEqual(argv.slice(0, 7), ['exec', '--workdir', ST.workspace, '--env', 'GRAFANA_URL=http://127.0.0.1:4930', '--env', 'A=b']);
+  assert.ok(argv.includes('surface-x-unit') && argv.at(-1) === 'x.js');
+  // A value the runner keeps under a secret name, or a refused name: the sandbox library says so, and nothing is run.
+  const seen = [];
+  const refuses = { targetEnvProblems: (env) => { seen.push(env); return ['GITHUB_TOKEN is never passed to a target']; } };
+  assert.throws(() => execArgv(ST, refuses, { cwd: ST.workspace, env: { GITHUB_TOKEN: 'x' }, pidfile: '/tmp/p', cmd: ['true'] }, {}), /refused: GITHUB_TOKEN/);
+  assert.deepEqual(seen, [{ GITHUB_TOKEN: 'x' }], 'the check saw the whole environment of the command');
+});
+
+test('R-DSB-08: a sandboxed step\'s output reaches the job log only between stop-commands markers', async () => {
+  const d = tmp();
+  try {
+    writeFileSync(join(d, 'docker'), '#!/bin/sh\necho "::error::forged"\necho "::add-mask::x" 1>&2\n');
+    chmodSync(join(d, 'docker'), 0o755);
+    let out = '';
+    const r = await stream({ env: { PATH: `${d}:${process.env.PATH}` } }, ['logs'], { sink: { write: (c) => { out += c; } } });
+    assert.equal(r.exit, 0);
+    const m = /^::stop-commands::([0-9a-f-]{36})\n([\s\S]*)\n::\1::\n$/.exec(out);
+    assert.ok(m, `markers around the output: ${JSON.stringify(out)}`);
+    assert.match(m[2], /::error::forged/);
+    assert.match(m[2], /::add-mask::x/);
+    let bare = '';
+    await stream({ env: { PATH: `${d}:${process.env.PATH}` } }, ['logs'], { bare: true, sink: { write: (c) => { bare += c; } } });
+    assert.doesNotMatch(bare, /stop-commands/, 'bare: the action switches commands off itself');
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('R-DSB-09: the driver loads the sandbox only from a checkout at exactly SANDBOX_REF', () => {
+  const d = tmp();
+  try {
+    const git = (...a) => spawnSync('git', ['-C', d, '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', '-c', 'commit.gpgsign=false', ...a], { encoding: 'utf8' });
+    git('init', '-q'); git('commit', '-q', '--allow-empty', '-m', 'x');
+    const head = git('rev-parse', 'HEAD').stdout.trim();
+    const env = { MSC_DIR: d, SANDBOX_REF: head, GITHUB_WORKSPACE: '/w/a/a', RUNNER_TEMP: '/w/_temp' };
+    assert.doesNotThrow(() => checkSandboxCheckout(env));
+    assert.throws(() => checkSandboxCheckout({ ...env, SANDBOX_REF: 'f'.repeat(40) }), /the sandbox checkout is not SANDBOX_REF/);
+    assert.throws(() => checkSandboxCheckout({ ...env, SANDBOX_REF: head.slice(0, 7) }), /full commit SHA/);
+    assert.throws(() => checkSandboxCheckout({ ...env, MSC_DIR: undefined }), /MSC_DIR is not set/);
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('R-DSB-10: a build\'s allowlist takes plain registry host names only', () => {
+  assert.deepEqual(parseHosts('registry.npmjs.org'), ['registry.npmjs.org']);
+  assert.deepEqual(parseHosts('proxy.golang.org,sum.golang.org'), ['proxy.golang.org', 'sum.golang.org']);
+  for (const bad of ['', ',', 'localhost', 'evil.com:443', '*.npmjs.org', 'a/b.org', '10.0.0.1', '-x.org', 'Registry.npmjs.org', `${'x'.repeat(98)}.io`]) {
+    assert.throws(() => parseHosts(bad), SbxError, bad);
+  }
+});
+
+test('R-DSB-11: what comes back from the CLI\'s folders never lands in a folder the host had before the call', () => {
+  const d = tmp();
+  try {
+    mkdirSync(join(d, 'plan'));
+    writeFileSync(join(d, 'plan', 'plan.txt'), 'the action wrote this');
+    const files = new Map([['plan/plan.txt', Buffer.from('forged')], ['plan/extra.txt', Buffer.from('x')], ['run-1/results.json', Buffer.from('{}')]]);
+    assert.deepEqual(writeBack(files, d, new Set(['plan'])), { written: 1, refused: 2 });
+    assert.ok(!existsSync(join(d, 'plan', 'extra.txt')), 'no new file in a folder the host had');
+    assert.equal(readFileSync(join(d, 'run-1', 'results.json'), 'utf8'), '{}');
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('R-DSB-12: pull reads no file through a linked folder above it; an env file line with a NUL or over 8 KiB is skipped', () => {
+  const d = tmp();
+  try {
+    mkdirSync(join(d, 'real'));
+    writeFileSync(join(d, 'real', 'snap.json'), '{"n":1}');
+    symlinkSync(join(d, 'real'), join(d, 'linked'));
+    const read = (p) => spawnSync(process.execPath, ['-e', PULL_JS, p], { encoding: 'utf8' });
+    assert.equal(read(join(d, 'real', 'snap.json')).stdout, '{"n":1}');
+    assert.equal(read(join(d, 'linked', 'snap.json')).status, 3, 'the file is regular, but its parent is a link');
+  } finally { rmSync(d, { recursive: true, force: true }); }
+  const { vars, skipped } = readEnvFile(`A=1\nB=x\0y\nC=${'z'.repeat(9000)}\nD=2\n`);
+  assert.deepEqual(vars.map(([k]) => k), ['A', 'D']);
+  assert.equal(skipped, 2);
+});
+
+test('R-DSB-13: files are read back only while every long-lived container of the job is paused; a failed pause reads nothing', async () => {
+  const calls = [];
+  const dk = (failOn = null) => ({ d: async (argv) => { calls.push(argv.join(' ')); return { exit: argv[0] === 'pause' && argv[1] === failOn ? 1 : 0 }; } });
+  const got = await whilePaused(dk(), ['unit', 'svc-a'], async () => { calls.push('read'); return 7; });
+  assert.equal(got, 7);
+  assert.deepEqual(calls, ['pause unit', 'pause svc-a', 'read', 'unpause svc-a', 'unpause unit']);
+  calls.length = 0;
+  await assert.rejects(whilePaused(dk('svc-a'), ['unit', 'svc-a'], async () => { calls.push('read'); }), /could not pause svc-a/);
+  assert.deepEqual(calls, ['pause unit', 'pause svc-a', 'unpause unit'], 'nothing read, and what was paused is resumed');
+});
+
+test('R-DSB-14: the harness (dogfood/, our scripts and manifests) is mounted read-only over the read-write workspace in every container of the job', () => {
+  const m = workMounts(ST, 'surface-x-tools');
+  assert.deepEqual(m, [
+    { src: 'surface-x-ws', dst: '/home/runner/work' },
+    { src: 'surface-x-harness', dst: '/home/runner/work/a/a/dogfood', ro: true },
+    { src: 'surface-x-tools', dst: '/opt/surface', ro: true },
+  ]);
+  const src = readFileSync(join(root, 'dogfood', 'sbx.mjs'), 'utf8');
+  assert.match(src, /`--exclude=\$\{wsRel\}\/dogfood`/, 'dogfood/ is not in the read-write copy');
+  // Every container that mounts the workspace mounts it through workMounts (the unit, builds, services of our images, run).
+  assert.equal((src.match(/mounts: workMounts\(st, shard\.toolsVol\)/g) ?? []).length + (src.match(/: workMounts\(st, shard\.toolsVol\);/g) ?? []).length, 4);
+  assert.doesNotMatch(src, /\{ src: st\.wsVol, dst: st\.mirror \}, \{ src: shard\.toolsVol/, 'no container of the job mounts the workspace without the harness over it');
 });

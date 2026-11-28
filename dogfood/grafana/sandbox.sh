@@ -5,7 +5,8 @@
 #                                            password is made by the driver and written to grafana-secrets/admin-pw in the
 #                                            work volume only; then dogfood/grafana/setup.mjs start and fixtures in the unit
 #   dogfood/grafana/sandbox.sh snap <file>   dogfood/grafana/snap.py in the sandbox's Python image, straight to Grafana's
-#                                            address; the snapshot (checksums and counts) comes back to <file> as data
+#                                            address; the snapshot (checksums and counts) comes back to <file> as data,
+#                                            never printed (compare-snaps.py reads it)
 # Env: GRAFANA_IMAGE, RUNNER_TEMP.
 set -euo pipefail
 sbx() { node dogfood/sbx.mjs "$@"; }
@@ -28,6 +29,5 @@ case "${1:?start or snap}" in
     sbx run --image python --env "GRAFANA_ADMIN_PW_FILE=$RUNNER_TEMP/grafana-secrets/admin-pw" \
       -- sh -c 'python3 dogfood/grafana/snap.py http://10.213.53.5:3000 > "$1"' sh "$out"
     sbx pull "$out" "$out"
-    cat "$out"
     ;;
 esac
