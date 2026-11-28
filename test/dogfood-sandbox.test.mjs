@@ -410,3 +410,13 @@ test('R-DSB-14: the harness (dogfood/, our scripts and manifests) is mounted rea
   assert.equal((src.match(/mounts: workMounts\(st, shard\.toolsVol\)/g) ?? []).length + (src.match(/: workMounts\(st, shard\.toolsVol\);/g) ?? []).length, 4);
   assert.doesNotMatch(src, /\{ src: st\.wsVol, dst: st\.mirror \}, \{ src: shard\.toolsVol/, 'no container of the job mounts the workspace without the harness over it');
 });
+
+test('R-DSB-15: the mutation probes run on GitHub Actions, on dispatch and on pull requests that touch the sandbox code, read-only', () => {
+  const y = wf('mutation-probes.yml');
+  assert.match(y, /\non:\n  workflow_dispatch:\n  pull_request:\n    paths:\n/);
+  assert.doesNotMatch(y.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n'), /pull_request_target|secrets\./);
+  assert.match(y, /\npermissions:\n  contents: read\n/);
+  assert.match(y, /run: node test\/mutants\/dogfood-sandbox\.mjs\n/);
+  const src = readFileSync(join(root, 'test', 'mutants', 'dogfood-sandbox.mjs'), 'utf8');
+  for (const id of ['R-DSB-07', 'R-DSB-08', 'R-DSB-09', 'R-DSB-10', 'R-DSB-11', 'R-DSB-12', 'R-DSB-13', 'R-DSB-14']) assert.ok(src.includes(`(${id})`), `${id} has a mutant`);
+});

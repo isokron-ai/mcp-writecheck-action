@@ -1,0 +1,33 @@
+# Mutation probes for the dogfood sandbox: each protection of dogfood/sbx.mjs and loop/sandbox/dogfood-*.mjs taken out in
+# turn (test/mutants/dogfood-sandbox.mjs) must make test/dogfood-sandbox.test.mjs fail. On dispatch, and on a pull request
+# that touches the code or its test. No secret, a read-only token, no pull_request_target.
+
+name: mutation-probes
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'dogfood/sbx.mjs'
+      - 'loop/sandbox/dogfood-*.mjs'
+      - 'test/dogfood-sandbox.test.mjs'
+      - 'test/mutants/**'
+      - '.github/workflows/mutation-probes.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  dogfood-sandbox:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Each protection taken out must fail its test
+        run: node test/mutants/dogfood-sandbox.mjs
