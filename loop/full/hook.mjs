@@ -11,6 +11,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 
+import { RAW_TOTAL_CAP } from '../bundle.mjs';
 import { catalogManifest } from '../items.mjs';
 import { findRunFolder } from '../summary.mjs';
 import { shardMode } from './contract.mjs';
@@ -18,6 +19,7 @@ import { fullObservations, labelRecords, labelledCounts } from './results.mjs';
 import { fullSplitRun } from './unit.mjs';
 
 export const PROOF_MUTATIONS = Object.freeze(['foreign_target']);
+const WRAPPED = Symbol('writecheck full mode');
 
 /**
  * The driver's in-container paths and limits that the full-mode split run uses as the driver's own split run does
@@ -57,6 +59,8 @@ export const itemIndex = (tag) => { const m = /^i(\d{1,2})$/.exec(String(tag)); 
 export function install(Shard, full, { runEnv, serverContainer }) {
   const units = new Map();
   if (full.mode !== 'full') return units;
+  // Installed once per process: a second install would take the first wrapper for the driver's own split run.
+  if (Shard.prototype.splitRun[WRAPPED]) throw new Error('full mode is installed already');
   const own = Shard.prototype.splitRun;
   const C = { ...DRIVER, runEnv, serverContainer, catalogManifest, ownSplitRun: own };
   Shard.prototype.splitRun = async function splitRunFull(u, opts) {
@@ -66,6 +70,7 @@ export function install(Shard, full, { runEnv, serverContainer }) {
     units.set(i, u.fullMode);
     try { return await fullSplitRun(this, u, opts, C); } finally { u.fullMode.files = opts.res.files; }
   };
+  Shard.prototype.splitRun[WRAPPED] = true;
   return units;
 }
 
@@ -134,12 +139,17 @@ export function finishBundle(dir, full, f) {
   const driver = readJson(driverPath);
   const notes = fullNotes(full, f);
   if (notes) driver.full_mode = notes;
+  // The driver's note for the full stage says why a third-party server got no write manifest; full mode's own says why.
+  if (f && f.outcome?.status !== 'ran' && typeof driver.full_detail === 'string') driver.full_detail = `full mode: ${f.outcome?.code ?? 'not_started'} (logs/driver.json full_mode)`;
   if (f?.stepDir) {
+    // Within the driver's raw total (loop/bundle.mjs RAW_TOTAL_CAP), counting what it kept already.
+    let room = RAW_TOTAL_CAP - (driver.raw_index ?? []).reduce((n, x) => n + (Number.isSafeInteger(x?.kept) ? x.kept : 0), 0);
     for (const name of RAW_ADD) {
       const p = join(f.stepDir, name);
       if (!existsSync(p)) continue;
       const buf = readFileSync(p);
-      const kept = buf.subarray(0, RAW_ADD_CAP);
+      const kept = buf.subarray(0, Math.max(0, Math.min(RAW_ADD_CAP, room)));
+      room -= kept.length;
       const rel = `raw/steps/${name}`;
       mkdirSync(dirname(join(bdir, rel)), { recursive: true });
       writeFileSync(join(bdir, rel), kept, { flag: 'wx' });

@@ -124,13 +124,13 @@ export async function fullSplitRun(shard, u, { work, image, serverCmd, res, unit
           if (Date.now() >= until) throw Object.assign(new M.HarnessError('the server bridge did not start'), u.oci ? { ociBridge: true } : {});
           await sleep(250);
         }
-        const cliStep = async (step, args, { keepStdout = false, env = {}, cap = C.MS.step } = {}) => {
+        const cliStep = async (step, args, { keepStdout = false, env = {}, cap = C.MS.step, outCap = 1024 * 1024 } = {}) => {
           const cname = shard.name(u.tag, 'c');
           const ccid = join(shard.cidDir, `${cname}.cid`);
           const cargv = M.helperRunArgs({ name: cname, image: shard.images.node24, network, ip: M.NETS.run.probe, resolv: 'run', cidfile: ccid, labels: shard.dk.labels(u.tag), cpus: shard.cpus, mounts: [{ src: out, dst: C.OUTD }, { src: shard.toolsVol, dst: C.TOOLS, ro: true }], env: { HOME: '/tmp', TMPDIR: '/tmp', NO_COLOR: '1', ...env }, cmd: ['sh', '-c', `cd ${C.OUTD} && exec "$@"`, 'sh', C.NODE, C.CLI_MAIN, ...args] });
           shard.writeSettings(cargv, { subject: u.tag, role: 'probe' });
           const c0 = Date.now();
-          const r = await shard.dk.d(cargv, { log: join(u.stepDir, `${step}.log`), deadline: Date.now() + left(cap), keepStdout, cap: 1024 * 1024, logCap: 4 * 1024 * 1024, onTimeout: () => shard.dk.kill(cname) });
+          const r = await shard.dk.d(cargv, { log: join(u.stepDir, `${step}.log`), deadline: Date.now() + left(cap), keepStdout, cap: outCap, logCap: 4 * 1024 * 1024, onTimeout: () => shard.dk.kill(cname) });
           await shard.dk.kill(cname);
           await shard.recordContainer({ id: shard.readCid(ccid), t0: c0, exit: r.exit, signal: r.signal, timedOut: r.timed_out, meta: { subject: u.tag, role: 'probe' } });
           res.steps.push({ step, exit: r.exit, timed_out: r.timed_out, ms: Date.now() - c0 });
@@ -153,7 +153,7 @@ export async function fullSplitRun(shard, u, { work, image, serverCmd, res, unit
         if (!decl.ok) { fm.outcome = { status: 'not_run', code: 'declaration_missing', detail: decl.missing.join('; ') }; return; }
         await put(`${C.OUTD}/${FULL_MANIFEST}`, decl.text);
         const confirm = decl.doc.target.confirm;
-        const fp = await cliStep('full-plan', ['plan', '-m', `${C.OUTD}/${FULL_MANIFEST}`], { keepStdout: true, env: secretEnv });
+        const fp = await cliStep('full-plan', ['plan', '-m', `${C.OUTD}/${FULL_MANIFEST}`], { keepStdout: true, env: secretEnv, outCap: 8 * 1024 * 1024 });
         const planStdout = fp.stdout.toString('utf8');
         writeFileSync(join(u.stepDir, 'full-plan.stdout'), planStdout);
         const rc = ruleCheck({ planStdout, confirm, addr, serverEnv: w.env, doc: decl.doc, relay });

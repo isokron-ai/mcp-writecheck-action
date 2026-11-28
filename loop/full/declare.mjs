@@ -47,7 +47,7 @@ export function readTools(doc) {
   for (const t of Array.isArray(doc?.tools) ? doc.tools.slice(0, MAX_TOOLS) : []) {
     if (typeof t?.name !== 'string' || !TOOL_NAME.test(t.name)) continue;
     const s = t.inputSchema && typeof t.inputSchema === 'object' && !Array.isArray(t.inputSchema) ? t.inputSchema : {};
-    const props = {};
+    const props = Object.create(null);
     const raw = s.properties && typeof s.properties === 'object' && !Array.isArray(s.properties) ? s.properties : {};
     for (const [k, v] of Object.entries(raw).slice(0, MAX_PROPS)) if (PROP_NAME.test(k)) props[k] = typeof v?.type === 'string' && /^[a-z]{1,16}$/.test(v.type) ? v.type : null;
     const required = Array.isArray(s.required) ? s.required.filter((r) => typeof r === 'string' && Object.hasOwn(props, r)) : [];
