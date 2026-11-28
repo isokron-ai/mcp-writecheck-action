@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
@@ -186,13 +186,29 @@ test('R-WC-14: the defects of the server, the manifest\'s comment and fixtures.j
 // ---------------------------------------------------------------------------------------------------------------------
 // R-WC-17 (live): the pinned CLI against a real PostgreSQL, known-good and known-bad, with the defects switched on one by one.
 
-const CLI_DIR = process.env.CLI_DIR ? join(process.cwd(), process.env.CLI_DIR) : null;
+// resolve, not join: selftest.yml passes an absolute CLI_DIR (join would put it under the working folder), test.yml a relative one.
+export const cliDirFrom = (v, cwd = process.cwd()) => (v ? resolve(cwd, v) : null);
+const CLI_DIR = cliDirFrom(process.env.CLI_DIR);
 const cliMain = CLI_DIR && (existsSync(CLI_DIR) ? join(CLI_DIR, 'dist', 'src', 'cli', 'main.js') : null);
 const haveDeps = existsSync(join(FIX, 'node_modules', 'pg'));
 const live = cliMain && existsSync(cliMain) && haveDeps ? false : 'needs CLI_DIR (a built packages/writecheck) and `npm ci --omit=dev` in loop/fixtures/pg-tracker';
 // In the CI job that runs them (CI and CLI_DIR set, or PG_LIVE_REQUIRED) a skip is a failure: the job cannot pass with nothing run.
 const required = process.env.PG_LIVE_REQUIRED === '1' || (process.env.CI && process.env.CLI_DIR);
 if (required && live) test('R-WC-17: the live tests are required here and cannot run', () => assert.fail(live));
+
+test('R-WC-41: CLI_DIR is found whether it is absolute (selftest.yml) or relative (test.yml), and selftest installs the fixture before its required live tests', () => {
+  assert.equal(cliDirFrom('/home/runner/work/a/a/mws/packages/writecheck', '/home/runner/work/a/a'), '/home/runner/work/a/a/mws/packages/writecheck');
+  assert.equal(cliDirFrom('mws-cli/packages/writecheck', '/w'), '/w/mws-cli/packages/writecheck');
+  assert.equal(cliDirFrom('', '/w'), null);
+  // Mutation: the old join() puts an absolute CLI_DIR under the working folder, so the CLI is never found there.
+  assert.equal(join('/home/runner/work/a/a', '/home/runner/work/a/a/mws/packages/writecheck'), '/home/runner/work/a/a/home/runner/work/a/a/mws/packages/writecheck');
+  // selftest.yml runs every unit test with CI and CLI_DIR set, which makes the live tests required: the fixture's
+  // dependencies must be installed in that job, before the local test.
+  const y = readFileSync(join(root, '.github', 'workflows', 'selftest.yml'), 'utf8');
+  const install = y.indexOf('- name: Install the PostgreSQL fixture\'s dependencies');
+  assert.ok(install > 0 && install < y.indexOf('- name: Local test against tiny-tracker'), 'installed before the local test');
+  assert.match(y.slice(install), /working-directory: action\/loop\/fixtures\/pg-tracker\n\s+run: npm ci --omit=dev --no-audit --no-fund --loglevel=error\n/);
+});
 
 const PORT = 4620;
 const waitLine = (child, re, ms) => new Promise((resolve, reject) => {
