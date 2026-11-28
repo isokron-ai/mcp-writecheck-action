@@ -550,7 +550,7 @@ test('R-WC-24: every skip says its fault side, one the reason allows; our own li
   // The driver builds its skips only through itemSkips: no skip object is written in run-items.mjs itself.
   const driver = readFileSync(join(root, 'loop', 'run-items.mjs'), 'utf8');
   assert.doesNotMatch(driver, /skips\.push\(\{/);
-  assert.match(driver, /itemSkips\(\{ resolved, res, unit: u, stages, evidenceComplete, installLog, serverLog \}\)/);
+  assert.match(driver, /itemSkips\(\{ resolved, res, unit: u, stages, evidenceComplete, installLog, serverLog, initLog \}\)/);
 });
 
 test('R-WC-25: a harness error is our own tool_error (retryable), not somebody else\'s outage', () => {
