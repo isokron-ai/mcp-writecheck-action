@@ -1,0 +1,58 @@
+name: mutation-probe
+
+# Mutation probes on Actions, instead of cloning the repository to check by hand: each probe switches one
+# protection off in a fresh checkout and the test that pins it must fail ("killed"). The work is done by
+# isokron-ai/tool-qa's reusable workflow (docs: tool-qa docs/OPERATIONS.md, "Mutation probes"); this file only
+# passes the inputs through. A probe is {id, file, find, replace, test?, pattern?}; find must occur exactly once
+# in file. The run fails if a probe survives, is stale, or its test fails before the edit. Read-only, no secrets.
+#
+#   gh workflow run mutation-probe.yml -R isokron-ai/mcp-writecheck-action -f ref=<branch-or-sha> -f test='node --test test/regressions.test.mjs' \
+#     -f mutations='[{"id":"m1","file":"<path>","find":"<exact text, once>","replace":"<text>"}]'
+#
+# Move both pins below together when tool-qa's runner changes (they are one commit).
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch or commit to test (empty: the default branch)'
+        type: string
+        required: false
+        default: ''
+      mutations:
+        description: 'JSON list of {id, file, find, replace, test?, pattern?}, 20 at most'
+        type: string
+        required: false
+        default: ''
+      probe-files:
+        description: 'Space-separated JSON probes files in the repository (same format)'
+        type: string
+        required: false
+        default: ''
+      test:
+        description: 'Test file (run with node --test) or shell command, for probes that name none'
+        type: string
+        required: false
+        default: ''
+      build:
+        description: 'Command run before the tests (empty: true)'
+        type: string
+        required: false
+        default: ''
+
+permissions: {}
+
+jobs:
+  probe:
+    name: mutation probes
+    permissions:
+      contents: read
+    uses: isokron-ai/tool-qa/.github/workflows/mutation-probe.yml@db978721a7d0f3094769fe4ad52202765a147038
+    with:
+      probe-ref: db978721a7d0f3094769fe4ad52202765a147038
+      ref: ${{ inputs.ref }}
+      mutations: ${{ inputs.mutations }}
+      probe-files: ${{ inputs.probe-files }}
+      test: ${{ inputs.test }}
+      build: ${{ inputs.build || 'true' }}
+      node-version: '22'
