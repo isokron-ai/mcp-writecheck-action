@@ -17,7 +17,7 @@ Written against `mcp-writecheck` at commit `0295ed6` (branch `cli/resync-516`, P
 | `examples/mcp-writecheck.yml` | Example workflow: `plan` and `catalog` on pull requests, `full` on main. |
 | `README.md`, `TESTING.md`, `RUNNER-TEST.md` | Use; the local test and what has no recorded observation; the historical plan for the first run on a runner (the action now runs on GitHub-hosted runners, see README, Tests). |
 | `skills/mcp-write-safe-builder/SKILL.md` | The 37 requirements as build rules, and how to add the check to CI. Unchanged since 14 November apart from two fact fixes in its CI section (review, below). |
-| `skills/mcp-write-safe-caller/SKILL.md` | Rules for an agent that calls write tools. The 14 November draft plus the two P-7 lines (owner-approved, 15 November). |
+| `skills/mcp-write-safe-caller/SKILL.md` | Rules for an agent that calls write tools. The 14 November draft plus the two P-7 lines (owner-approved, 15 November), and the key-scoped `not_applied` line (owner decision, 28 November; MWS DECISIONS R16-1). |
 | `LICENSE`, `NOTICE` | Apache-2.0 for `integrations/` (the licence text, and the notice: Stormhaven Enterprises LLC (IsoKron) and Joshua Bryan), and the CC BY 4.0 attribution of the spec the skills restate. |
 
 ## Decided since 14 November (owner, 15 November)
