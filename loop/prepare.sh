@@ -2,6 +2,7 @@
 # Set-up of the writecheck loop worker's job, shared by .github/workflows/corpus.yml (the worker the pump
 # dispatches) and .github/workflows/loop-fixture.yml (its pull-request proof run). Run from the workspace root.
 #
+#   loop/prepare.sh sandbox    mcp-surface-corpus at SANDBOX_REF only, into msc/ (the dogfood workers, dogfood/sbx.mjs)
 #   loop/prepare.sh fetch      mcp-writecheck at CLI_REF (built by dogfood/build-cli.sh), mcp-surface-corpus at
 #                              SANDBOX_REF (the sandbox), tool-qa's seed at SEED_REF, and mcp-check's live-probe
 #                              resolver at MCP_CHECK_REF (OCI images, WC14: its corpus/ module and the src/ and engine/
@@ -42,8 +43,13 @@ case "${1:-}" in
     fetch_at isokron-ai/tool-qa "$SEED_REF" toolqa /history/seed-v1.json
     fetch_at isokron-ai/mcp-check "$MCP_CHECK_REF" mck /corpus/live-probe.mjs /corpus/tool-commit.mjs /corpus/mcpb.mjs /corpus/pypi-entry.mjs /corpus/scan-static.mjs /corpus/static-read.cjs /corpus/ast-grep/ /corpus/oracles/ /corpus/fixtures/live-probe/ /src/ /engine/ /package.json
     ;;
+  # The dogfood workers (dogfood/sbx.mjs): only the sandbox, at the commit their sandbox-guard step names.
+  sandbox)
+    : "${SANDBOX_REF:?}"
+    fetch_at isokron-ai/mcp-surface-corpus "$SANDBOX_REF" msc
+    ;;
   *)
-    echo "usage: loop/prepare.sh fetch" >&2
+    echo "usage: loop/prepare.sh fetch|sandbox" >&2
     exit 2
     ;;
 esac

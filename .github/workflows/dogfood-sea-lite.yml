@@ -20,6 +20,13 @@
 # No secret is used: isokron-ai/mcp-write-safety is public, so the "Check out mcp-writecheck" step
 # needs no token; the action gets the built CLI through cli-path. Third-party actions are pinned by full SHA.
 # sea-lite is public and checked out without a token.
+#
+# The sandbox: sea-lite's install and build, the seeding and every run of the server (the CLI starts it) run inside
+# isokron-ai/mcp-surface-corpus's sandbox at SANDBOX_REF, the one the writecheck lane (corpus.yml) uses, through
+# dogfood/sbx.mjs: gVisor, user 65534, no capability, a read-only root, no runner environment; the install reaches
+# registry.npmjs.org only, through the allowlist proxy, and the run has no network out at all. The reusable
+# sandbox-conformance job and, on each job's own runner, the sandbox-guard action pass first, both at SANDBOX_REF.
+# The sealed bundle is built by t0-manifest, another job that runs none of this code.
 
 name: "dogfood: sea-lite"
 
@@ -54,6 +61,15 @@ on:
         required: false
         default: ''
 
+  # The pull-request proof (dogfood-sandbox-proof.yml) calls this same file: proof true builds the bundle in a dry run
+  # (no encryption, no upload). The dispatch inputs it does not pass are empty, so the pinned defaults run.
+  workflow_call:
+    inputs:
+      shard_id: { type: string, required: true }
+      attempt_id: { type: string, required: true }
+      fence: { type: string, required: true }
+      run_key: { type: string, required: true }
+      proof: { type: boolean, required: false, default: false }
 permissions: {}
 
 concurrency:
@@ -61,6 +77,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  # isokron-ai/mcp-surface-corpus main at 78a7834, the commit its nightly conformance tests (as corpus.yml). The
+  # conformance job and the sandbox-guard step name this same commit (test/dogfood-sandbox.test.mjs checks).
+  SANDBOX_REF: '78a7834cf028507b03e90e266b87bebeacfccd51'
   PLAN_HASHES: ${{ inputs.plan-hashes }}
   # isokron-ai/sea-lite main (0.7.2).
   SEA_LITE_REF: b536cc18d7eeb43a16da3d3bb1f88edfa6df3eb3
@@ -107,14 +126,26 @@ jobs:
             echo "run_key=$IN_RUN_KEY"
           } >> "$GITHUB_OUTPUT"
 
-  sea-lite:
+  # The sandbox proven on today's runner image before any job that runs third-party code starts.
+  conformance:
     needs: t0-start
+    if: needs.t0-start.outputs.go == 'true'
     permissions:
       contents: read
-    if: needs.t0-start.outputs.go == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    uses: isokron-ai/mcp-surface-corpus/.github/workflows/sandbox-conformance.yml@78a7834cf028507b03e90e266b87bebeacfccd51 # SANDBOX_REF
+    with:
+      mutations: false
+      artifact-prefix: dogfood-sea-lite-conformance
+
+  sea-lite:
+    needs: [t0-start, conformance]
+    permissions:
+      contents: read
+    if: needs.t0-start.outputs.go == 'true' && needs.conformance.outputs.verdict == 'pass' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
+      MSC_DIR: msc
       PLAN_HASH: 4b6e3820ae5a5bec
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -139,6 +170,8 @@ jobs:
           persist-credentials: false
       - name: Build mcp-writecheck
         run: dogfood/build-cli.sh
+      - name: Fetch the sandbox (SANDBOX_REF)
+        run: loop/prepare.sh sandbox
       - name: Check out sea-lite
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -146,16 +179,22 @@ jobs:
           ref: ${{ env.SEA_LITE_REF }}
           path: srv
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 22
-      - name: Build sea-lite
-        working-directory: srv
-        run: npm ci --no-audit --no-fund && npm run build
-      - name: Make and seed the job's store
-        run: |
-          echo "SEA_LITE_DATA_DIR=$RUNNER_TEMP/sea-lite-store" >> "$GITHUB_ENV"
-          SEA_LITE_DATA_DIR="$RUNNER_TEMP/sea-lite-store" dogfood/sea-lite/seed.sh
+      # gVisor, the firewall and the hostile self test on this very runner, before any third-party code runs.
+      - id: sandbox
+        name: Sandbox guard (gVisor, firewall, self test)
+        uses: isokron-ai/mcp-surface-corpus/sandbox-guard@78a7834cf028507b03e90e266b87bebeacfccd51 # SANDBOX_REF
+      - name: The guard ran the pinned sandbox and passed
+        env:
+          VERDICT: ${{ steps.sandbox.outputs.verdict }}
+          GUARD_SHA: ${{ steps.sandbox.outputs.sandbox-sha }}
+        run: dogfood/sandbox-guarded.sh
+      - name: Sandbox up (the workspace mirrored into it)
+        run: node dogfood/sbx.mjs up
+      - name: Build sea-lite (in the sandbox)
+        run: node dogfood/sbx.mjs build --image node22-build --hosts registry.npmjs.org --native --cwd srv -- sh -c 'npm ci --no-audit --no-fund && npm run build'
+      # SEA_LITE_DATA_DIR goes to the sandbox's own GITHUB_ENV, where the CLI (and serve.sh) read it.
+      - name: Make and seed the job's store (in the sandbox)
+        run: node dogfood/sbx.mjs exec -- sh -c 'echo "SEA_LITE_DATA_DIR=$RUNNER_TEMP/sea-lite-store" >> "$GITHUB_ENV" && SEA_LITE_DATA_DIR="$RUNNER_TEMP/sea-lite-store" dogfood/sea-lite/seed.sh'
       - id: plan
         name: Plan
         uses: ./
@@ -163,7 +202,7 @@ jobs:
           manifest: dogfood/sea-lite/writecheck.yaml
           mode: plan
           artifact-name: sea-lite-plan
-          cli-path: ${{ env.MWSC_CLI_PATH }}
+          cli-path: dogfood/sbx-cli
       - name: Compare the plan hash with the accepted one
         env:
           SEEN: ${{ steps.plan.outputs.plan-hash }}
@@ -175,7 +214,7 @@ jobs:
           mode: catalog
           fail-on: must
           artifact-name: sea-lite-catalog
-          cli-path: ${{ env.MWSC_CLI_PATH }}
+          cli-path: dogfood/sbx-cli
       - name: Full run
         uses: ./
         with:
@@ -185,16 +224,23 @@ jobs:
           confirm-target: sea-lite-dogfood
           plan-hash: ${{ env.ACCEPTED_PLAN_HASH }}
           artifact-name: sea-lite-full
-          cli-path: ${{ env.MWSC_CLI_PATH }}
+          cli-path: dogfood/sbx-cli
+      - name: End the sandbox
+        if: always()
+        run: node dogfood/sbx.mjs down
+      - name: Stop Docker, and check nothing of the sandbox is left
+        if: always()
+        run: loop/teardown.sh
 
   cli-fixed-bugs:
-    needs: t0-start
+    needs: [t0-start, conformance]
     permissions:
       contents: read
-    if: needs.t0-start.outputs.go == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    if: needs.t0-start.outputs.go == 'true' && needs.conformance.outputs.verdict == 'pass' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
+      MSC_DIR: msc
       PLAN_HASH: ff54a66730af2df4
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -219,6 +265,8 @@ jobs:
           persist-credentials: false
       - name: Build mcp-writecheck
         run: dogfood/build-cli.sh
+      - name: Fetch the sandbox (SANDBOX_REF)
+        run: loop/prepare.sh sandbox
       - name: Check out sea-lite
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -226,16 +274,22 @@ jobs:
           ref: ${{ env.SEA_LITE_REF }}
           path: srv
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 22
-      - name: Build sea-lite
-        working-directory: srv
-        run: npm ci --no-audit --no-fund && npm run build
-      - name: Make and seed the job's store
-        run: |
-          echo "SEA_LITE_DATA_DIR=$RUNNER_TEMP/sea-lite-store" >> "$GITHUB_ENV"
-          SEA_LITE_DATA_DIR="$RUNNER_TEMP/sea-lite-store" dogfood/sea-lite/seed.sh
+      # gVisor, the firewall and the hostile self test on this very runner, before any third-party code runs.
+      - id: sandbox
+        name: Sandbox guard (gVisor, firewall, self test)
+        uses: isokron-ai/mcp-surface-corpus/sandbox-guard@78a7834cf028507b03e90e266b87bebeacfccd51 # SANDBOX_REF
+      - name: The guard ran the pinned sandbox and passed
+        env:
+          VERDICT: ${{ steps.sandbox.outputs.verdict }}
+          GUARD_SHA: ${{ steps.sandbox.outputs.sandbox-sha }}
+        run: dogfood/sandbox-guarded.sh
+      - name: Sandbox up (the workspace mirrored into it)
+        run: node dogfood/sbx.mjs up
+      - name: Build sea-lite (in the sandbox)
+        run: node dogfood/sbx.mjs build --image node22-build --hosts registry.npmjs.org --native --cwd srv -- sh -c 'npm ci --no-audit --no-fund && npm run build'
+      # SEA_LITE_DATA_DIR goes to the sandbox's own GITHUB_ENV, where the CLI (and serve.sh) read it.
+      - name: Make and seed the job's store (in the sandbox)
+        run: node dogfood/sbx.mjs exec -- sh -c 'echo "SEA_LITE_DATA_DIR=$RUNNER_TEMP/sea-lite-store" >> "$GITHUB_ENV" && SEA_LITE_DATA_DIR="$RUNNER_TEMP/sea-lite-store" dogfood/sea-lite/seed.sh'
       - id: plan
         name: Plan
         uses: ./
@@ -243,7 +297,7 @@ jobs:
           manifest: dogfood/sea-lite/writecheck-claim.yaml
           mode: plan
           artifact-name: sea-lite-fixed-bugs-plan
-          cli-path: ${{ env.MWSC_CLI_PATH }}
+          cli-path: dogfood/sbx-cli
       - name: Compare the plan hash with the accepted one
         env:
           SEEN: ${{ steps.plan.outputs.plan-hash }}
@@ -259,7 +313,7 @@ jobs:
           confirm-target: sea-lite-dogfood
           plan-hash: ${{ env.ACCEPTED_PLAN_HASH }}
           artifact-name: sea-lite-fixed-bugs-full
-          cli-path: ${{ env.MWSC_CLI_PATH }}
+          cli-path: dogfood/sbx-cli
       - name: The former CLI false results stay fixed, and nothing is violated
         env:
           OUTCOME: ${{ steps.full.outcome }}
@@ -267,9 +321,15 @@ jobs:
           CLI_EXIT: ${{ steps.full.outputs.cli-exit-code }}
           RESULTS: ${{ steps.full.outputs.results-path }}
         run: dogfood/sea-lite/expect-fixed-cli-bugs.sh
+      - name: End the sandbox
+        if: always()
+        run: node dogfood/sbx.mjs down
+      - name: Stop Docker, and check nothing of the sandbox is left
+        if: always()
+        run: loop/teardown.sh
 
   t0-manifest:
-    needs: [t0-start, sea-lite, cli-fixed-bugs]
+    needs: [t0-start, conformance, sea-lite, cli-fixed-bugs]
     if: ${{ always() && needs.t0-start.outputs.go == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -296,3 +356,4 @@ jobs:
           item-index: 0
           fence: ${{ needs.t0-start.outputs.fence }}
           run-key: ${{ needs.t0-start.outputs.run_key }}
+          dry-run: ${{ inputs.proof && 'true' || 'false' }}

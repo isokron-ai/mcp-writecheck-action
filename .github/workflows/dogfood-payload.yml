@@ -6,7 +6,7 @@
 #
 #   research  isokron-ai/payload-mcp-writepath-experiment at a pinned commit: the sandbox Payload
 #             3.93.0 app (harness/app) with the research build v2.1 of @payloadcms/plugin-mcp
-#             swapped in by the experiment's own build script, on Postgres in a container started by a step.
+#             swapped in by the experiment's own build script, on Postgres, both in the job's sandbox.
 #             plan, catalog, then a full run. The full run uses fail-on: none, and the job compares
 #             its violated records with dogfood/payload/expected-violations.research.txt: a new
 #             violated record, or a known one that no longer appears, fails the job. A run that does
@@ -25,8 +25,17 @@
 #
 # Security: no pull_request_target. A pull request from a fork runs nothing here (each job's `if:`).
 # No secret is used: isokron-ai/mcp-write-safety is public, so the "Check out mcp-writecheck" step
-# needs no token. Every
-# credential of the app and of Postgres is generated in the job and masked. Third-party actions are pinned by full SHA.
+# needs no token. Every credential of the app and of Postgres is made inside the sandbox, for an app and a database
+# nothing outside it can reach, and never printed. Third-party actions are pinned by full SHA.
+#
+# The sandbox: pnpm (unpacked from its integrity-checked tarball, never run on the runner), the app's install and the
+# experiment's build script, Postgres, `next dev`, the seeding, the snapshots, the shim and the CLI run inside
+# isokron-ai/mcp-surface-corpus's sandbox at SANDBOX_REF, the one the writecheck lane (corpus.yml) uses, through
+# dogfood/sbx.mjs: gVisor, user 65534, no capability, a read-only root, no runner environment; the install reaches
+# registry.npmjs.org only, through the allowlist proxy, and the run has no network out at all. The app is a service at
+# 10.213.53.5 of the run network (Postgres at .6), reached from the unit (the CLI's container) as 127.0.0.1:4960, as the
+# manifests say. The reusable sandbox-conformance job and, on each job's own runner, the sandbox-guard action pass
+# first, both at SANDBOX_REF. The sealed bundle is built by t0-manifest, another job that runs none of this code.
 
 name: "dogfood: payload"
 
@@ -61,6 +70,15 @@ on:
         required: false
         default: ''
 
+  # The pull-request proof (dogfood-sandbox-proof.yml) calls this same file: proof true builds the bundle in a dry run
+  # (no encryption, no upload). The dispatch inputs it does not pass are empty, so the pinned defaults run.
+  workflow_call:
+    inputs:
+      shard_id: { type: string, required: true }
+      attempt_id: { type: string, required: true }
+      fence: { type: string, required: true }
+      run_key: { type: string, required: true }
+      proof: { type: boolean, required: false, default: false }
 permissions: {}
 
 concurrency:
@@ -68,11 +86,26 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  # isokron-ai/mcp-surface-corpus main at 78a7834, the commit its nightly conformance tests (as corpus.yml). The
+  # conformance job and the sandbox-guard step name this same commit (test/dogfood-sandbox.test.mjs checks).
+  SANDBOX_REF: '78a7834cf028507b03e90e266b87bebeacfccd51'
   PLAN_HASHES: ${{ inputs.plan-hashes }}
   # isokron-ai/payload-mcp-writepath-experiment main (its packages/plugin-mcp is research v2.1;
   # the build script builds from the tags research-v2.1-v3.93.0 and upstream-v3.93.0).
   EXP_REF: 35415109e36c45b6b0e9d9eb7686218a3b320e01
   PAYLOAD_URL: http://127.0.0.1:4960
+  # Postgres for the app, the sandbox service `pg` (dogfood/sbx.mjs svc): the pinned image, its own binaries started by
+  # this script as the sandbox user (the image's entrypoint wants root), data and socket under /tmp, the database
+  # `payload` owned by `payload`, password authentication from the run network only. POSTGRES_PASSWORD is the
+  # driver's random value for this service (--secret-env); it is never in the runner's environment.
+  PG_IMAGE: postgres:17.6-alpine@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94
+  PG_START: >-
+    set -e; export PGDATA=/tmp/pgdata; umask 077; printf '%s' "$POSTGRES_PASSWORD" > /tmp/pw;
+    initdb -D "$PGDATA" -U payload --pwfile=/tmp/pw --auth-host=scram-sha-256 --auth-local=trust > /tmp/initdb.log;
+    rm -f /tmp/pw; echo 'host all all 10.213.53.0/24 scram-sha-256' >> "$PGDATA/pg_hba.conf";
+    postgres -D "$PGDATA" -c listen_addresses='*' -c unix_socket_directories=/tmp & pid=$!;
+    until pg_isready -h /tmp -U payload -q; do sleep 0.5; done;
+    createdb -h /tmp -U payload payload; echo 'postgres ready'; wait $pid
 
 jobs:
   t0-start:
@@ -116,14 +149,26 @@ jobs:
             echo "run_key=$IN_RUN_KEY"
           } >> "$GITHUB_OUTPUT"
 
-  research:
+  # The sandbox proven on today's runner image before any job that runs third-party code starts.
+  conformance:
     needs: t0-start
+    if: needs.t0-start.outputs.go == 'true'
     permissions:
       contents: read
-    if: needs.t0-start.outputs.go == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    uses: isokron-ai/mcp-surface-corpus/.github/workflows/sandbox-conformance.yml@78a7834cf028507b03e90e266b87bebeacfccd51 # SANDBOX_REF
+    with:
+      mutations: false
+      artifact-prefix: dogfood-payload-conformance
+
+  research:
+    needs: [t0-start, conformance]
+    permissions:
+      contents: read
+    if: needs.t0-start.outputs.go == 'true' && needs.conformance.outputs.verdict == 'pass' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
+      MSC_DIR: msc
       PLAN_HASH: 51bc52f039e475ee
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -148,6 +193,8 @@ jobs:
           persist-credentials: false
       - name: Build mcp-writecheck
         run: dogfood/build-cli.sh
+      - name: Fetch the sandbox (SANDBOX_REF)
+        run: loop/prepare.sh sandbox
       - name: Check out the experiment
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -157,23 +204,45 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 22
       - name: Download pnpm
         run: dogfood/install-pnpm.sh fetch
       - name: Install pnpm (integrity checked)
         run: dogfood/install-pnpm.sh install
-      - name: Build the research app
-        run: dogfood/payload/stack.sh build research
-      - name: Start Postgres (password made here, masked)
-        run: dogfood/payload/stack.sh pg
-      - name: Start the app
-        run: dogfood/payload/stack.sh start research
-      - name: Seed users, the MCP key, the fixed rows and the bystanders
-        run: node dogfood/payload/setup.mjs
-      - name: Snapshot the documents the tester does not create
-        run: node dogfood/payload/snap.mjs > "$RUNNER_TEMP/snap-before.json"
+      # gVisor, the firewall and the hostile self test on this very runner, before any third-party code runs.
+      - id: sandbox
+        name: Sandbox guard (gVisor, firewall, self test)
+        uses: isokron-ai/mcp-surface-corpus/sandbox-guard@78a7834cf028507b03e90e266b87bebeacfccd51 # SANDBOX_REF
+      - name: The guard ran the pinned sandbox and passed
+        env:
+          VERDICT: ${{ steps.sandbox.outputs.verdict }}
+          GUARD_SHA: ${{ steps.sandbox.outputs.sandbox-sha }}
+        run: dogfood/sandbox-guarded.sh
+      - name: Sandbox up (the workspace mirrored into it; 127.0.0.1:4960 is the app at .5)
+        run: node dogfood/sbx.mjs up --fwd 4960=5:4960
+      # pnpm install runs the packages' install scripts (esbuild, sharp, Next's SWC: platform packages from the registry).
+      - name: Build the research app (in the sandbox)
+        run: node dogfood/sbx.mjs build --image node22-build --hosts registry.npmjs.org --cwd . --path .sbx-pnpm/bin --minutes 25 -- dogfood/payload/stack.sh build research
+      # Postgres in its own image under gVisor, as the sandbox user, data under the container's /tmp; its password is
+      # made by the driver and written to pg-secrets/pw in the work volume only (never in the runner's environment).
+      - name: Start Postgres (a service of the sandbox's run network)
+        run: >-
+          node dogfood/sbx.mjs svc --name pg --ip 6 --image-ref "$PG_IMAGE" --workdir /tmp --entrypoint /bin/sh
+          --secret-env "POSTGRES_PASSWORD=$RUNNER_TEMP/pg-secrets/pw" -- -c "$PG_START"
+      - name: Wait for Postgres; DATABASE_URL into the sandbox's env (in the sandbox)
+        run: node dogfood/sbx.mjs exec -- dogfood/payload/stack.sh pg
+      - name: The app's .env (in the sandbox)
+        run: node dogfood/sbx.mjs exec -- dogfood/payload/stack.sh env research
+      - name: Start the app (next dev, a service of the sandbox's run network)
+        run: >-
+          node dogfood/sbx.mjs svc --name app --ip 5 --image node22 --cwd exp/harness/build/app-research-v2-1 --wrap
+          --env NEXT_TELEMETRY_DISABLED=1 --env NODE_OPTIONS=--no-deprecation
+          -- node_modules/.bin/next dev -H 0.0.0.0 -p 4960
+      - name: Wait for the app (in the sandbox)
+        run: node dogfood/sbx.mjs exec -- dogfood/payload/stack.sh wait
+      - name: Seed users, the MCP key, the fixed rows and the bystanders (in the sandbox)
+        run: node dogfood/sbx.mjs exec -- node dogfood/payload/setup.mjs
+      - name: Snapshot the documents the tester does not create (in the sandbox)
+        run: node dogfood/sbx.mjs exec -- sh -c 'node dogfood/payload/snap.mjs > "$RUNNER_TEMP/snap-before.json"'
       - id: plan
         name: Plan
         uses: ./
@@ -181,7 +250,7 @@ jobs:
           manifest: dogfood/payload/writecheck.research.yaml
           mode: plan
           artifact-name: payload-research-plan
-          cli-path: ${{ env.MWSC_CLI_PATH }}
+          cli-path: dogfood/sbx-cli
       - name: Compare the plan hash with the accepted one
         env:
           SEEN: ${{ steps.plan.outputs.plan-hash }}
@@ -193,7 +262,7 @@ jobs:
           mode: catalog
           fail-on: any
           artifact-name: payload-research-catalog
-          cli-path: ${{ env.MWSC_CLI_PATH }}
+          cli-path: dogfood/sbx-cli
       - id: full
         name: Full run
         uses: ./
@@ -204,7 +273,7 @@ jobs:
           confirm-target: dogfood-payload-research-v2.1
           plan-hash: ${{ env.ACCEPTED_PLAN_HASH }}
           artifact-name: payload-research-full
-          cli-path: ${{ env.MWSC_CLI_PATH }}
+          cli-path: dogfood/sbx-cli
       - name: Compare the violated records with the known ones
         if: always() && steps.full.outputs.results-path != ''
         env:
@@ -212,19 +281,26 @@ jobs:
         run: node dogfood/payload/expect.mjs "$RESULTS/results.json" dogfood/payload/expected-violations.research.txt
       - name: Check the documents the tester does not create
         if: always() && steps.full.outcome != 'skipped'
-        run: node dogfood/payload/snap.mjs --compare "$RUNNER_TEMP/snap-before.json"
-      - name: Stop the app
+        run: node dogfood/sbx.mjs exec -- node dogfood/payload/snap.mjs --compare "$RUNNER_TEMP/snap-before.json"
+      - name: The app's log, when a step failed
+        if: failure()
+        run: node dogfood/sbx.mjs logs app 150
+      - name: End the sandbox
         if: always()
-        run: dogfood/payload/stack.sh stop
+        run: node dogfood/sbx.mjs down
+      - name: Stop Docker, and check nothing of the sandbox is left
+        if: always()
+        run: loop/teardown.sh
 
   research-shim:
-    needs: t0-start
+    needs: [t0-start, conformance]
     permissions:
       contents: read
-    if: needs.t0-start.outputs.go == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    if: needs.t0-start.outputs.go == 'true' && needs.conformance.outputs.verdict == 'pass' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
+      MSC_DIR: msc
       PLAN_HASH: 1b8d0329639626e9
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -249,6 +325,8 @@ jobs:
           persist-credentials: false
       - name: Build mcp-writecheck
         run: dogfood/build-cli.sh
+      - name: Fetch the sandbox (SANDBOX_REF)
+        run: loop/prepare.sh sandbox
       - name: Check out the experiment
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -258,25 +336,49 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 22
       - name: Download pnpm
         run: dogfood/install-pnpm.sh fetch
       - name: Install pnpm (integrity checked)
         run: dogfood/install-pnpm.sh install
-      - name: Build the research app
-        run: dogfood/payload/stack.sh build research
-      - name: Start Postgres (password made here, masked)
-        run: dogfood/payload/stack.sh pg
-      - name: Start the app
-        run: dogfood/payload/stack.sh start research
-      - name: Start the shim
-        run: dogfood/payload/stack.sh shim
-      - name: Seed users, the MCP key, the fixed rows and the bystanders
-        run: node dogfood/payload/setup.mjs
-      - name: Snapshot the documents the tester does not create
-        run: node dogfood/payload/snap.mjs > "$RUNNER_TEMP/snap-before.json"
+      # gVisor, the firewall and the hostile self test on this very runner, before any third-party code runs.
+      - id: sandbox
+        name: Sandbox guard (gVisor, firewall, self test)
+        uses: isokron-ai/mcp-surface-corpus/sandbox-guard@78a7834cf028507b03e90e266b87bebeacfccd51 # SANDBOX_REF
+      - name: The guard ran the pinned sandbox and passed
+        env:
+          VERDICT: ${{ steps.sandbox.outputs.verdict }}
+          GUARD_SHA: ${{ steps.sandbox.outputs.sandbox-sha }}
+        run: dogfood/sandbox-guarded.sh
+      - name: Sandbox up (the workspace mirrored into it; 127.0.0.1:4960 is the app at .5)
+        run: node dogfood/sbx.mjs up --fwd 4960=5:4960
+      # pnpm install runs the packages' install scripts (esbuild, sharp, Next's SWC: platform packages from the registry).
+      - name: Build the research app (in the sandbox)
+        run: node dogfood/sbx.mjs build --image node22-build --hosts registry.npmjs.org --cwd . --path .sbx-pnpm/bin --minutes 25 -- dogfood/payload/stack.sh build research
+      # Postgres in its own image under gVisor, as the sandbox user, data under the container's /tmp; its password is
+      # made by the driver and written to pg-secrets/pw in the work volume only (never in the runner's environment).
+      - name: Start Postgres (a service of the sandbox's run network)
+        run: >-
+          node dogfood/sbx.mjs svc --name pg --ip 6 --image-ref "$PG_IMAGE" --workdir /tmp --entrypoint /bin/sh
+          --secret-env "POSTGRES_PASSWORD=$RUNNER_TEMP/pg-secrets/pw" -- -c "$PG_START"
+      - name: Wait for Postgres; DATABASE_URL into the sandbox's env (in the sandbox)
+        run: node dogfood/sbx.mjs exec -- dogfood/payload/stack.sh pg
+      - name: The app's .env (in the sandbox)
+        run: node dogfood/sbx.mjs exec -- dogfood/payload/stack.sh env research
+      - name: Start the app (next dev, a service of the sandbox's run network)
+        run: >-
+          node dogfood/sbx.mjs svc --name app --ip 5 --image node22 --cwd exp/harness/build/app-research-v2-1 --wrap
+          --env NEXT_TELEMETRY_DISABLED=1 --env NODE_OPTIONS=--no-deprecation
+          -- node_modules/.bin/next dev -H 0.0.0.0 -p 4960
+      - name: Wait for the app (in the sandbox)
+        run: node dogfood/sbx.mjs exec -- dogfood/payload/stack.sh wait
+      - name: Start the shim (in the sandbox)
+        run: |
+          node dogfood/sbx.mjs exec --bg -- sh -c 'exec node dogfood/payload/shim.mjs --listen 4961 --upstream http://127.0.0.1:4960 > "$RUNNER_TEMP/payload-shim.log" 2>&1'
+          node dogfood/sbx.mjs exec -- dogfood/payload/stack.sh shim-wait
+      - name: Seed users, the MCP key, the fixed rows and the bystanders (in the sandbox)
+        run: node dogfood/sbx.mjs exec -- node dogfood/payload/setup.mjs
+      - name: Snapshot the documents the tester does not create (in the sandbox)
+        run: node dogfood/sbx.mjs exec -- sh -c 'node dogfood/payload/snap.mjs > "$RUNNER_TEMP/snap-before.json"'
       - id: plan
         name: Plan
         uses: ./
@@ -284,7 +386,7 @@ jobs:
           manifest: dogfood/payload/writecheck.research-shim.yaml
           mode: plan
           artifact-name: payload-research-shim-plan
-          cli-path: ${{ env.MWSC_CLI_PATH }}
+          cli-path: dogfood/sbx-cli
       - name: Compare the plan hash with the accepted one
         env:
           SEEN: ${{ steps.plan.outputs.plan-hash }}
@@ -296,7 +398,7 @@ jobs:
           mode: catalog
           fail-on: any
           artifact-name: payload-research-shim-catalog
-          cli-path: ${{ env.MWSC_CLI_PATH }}
+          cli-path: dogfood/sbx-cli
       - id: full
         name: Full run
         uses: ./
@@ -307,7 +409,7 @@ jobs:
           confirm-target: dogfood-payload-research-v2.1-shim
           plan-hash: ${{ env.ACCEPTED_PLAN_HASH }}
           artifact-name: payload-research-shim-full
-          cli-path: ${{ env.MWSC_CLI_PATH }}
+          cli-path: dogfood/sbx-cli
       - name: Compare the violated records with the known ones
         if: always() && steps.full.outputs.results-path != ''
         env:
@@ -315,13 +417,19 @@ jobs:
         run: node dogfood/payload/expect.mjs "$RESULTS/results.json" dogfood/payload/expected-violations.research-shim.txt
       - name: Check the documents the tester does not create
         if: always() && steps.full.outcome != 'skipped'
-        run: node dogfood/payload/snap.mjs --compare "$RUNNER_TEMP/snap-before.json"
-      - name: Stop the app and the shim
+        run: node dogfood/sbx.mjs exec -- node dogfood/payload/snap.mjs --compare "$RUNNER_TEMP/snap-before.json"
+      - name: The app's log, when a step failed
+        if: failure()
+        run: node dogfood/sbx.mjs logs app 150
+      - name: End the sandbox
         if: always()
-        run: dogfood/payload/stack.sh stop
+        run: node dogfood/sbx.mjs down
+      - name: Stop Docker, and check nothing of the sandbox is left
+        if: always()
+        run: loop/teardown.sh
 
   vendor:
-    needs: t0-start
+    needs: [t0-start, conformance]
     permissions:
       contents: read
     # DISABLED: needs the owner's go. This repository's logs and job summaries are public, and the
@@ -330,6 +438,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
+      MSC_DIR: msc
       # Not accepted yet: read the vendor plan before pinning its hash.
       PLAN_HASH: 'none'
     steps:
@@ -355,6 +464,8 @@ jobs:
           persist-credentials: false
       - name: Build mcp-writecheck
         run: dogfood/build-cli.sh
+      - name: Fetch the sandbox (SANDBOX_REF)
+        run: loop/prepare.sh sandbox
       - name: Check out the experiment
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -364,23 +475,45 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 22
       - name: Download pnpm
         run: dogfood/install-pnpm.sh fetch
       - name: Install pnpm (integrity checked)
         run: dogfood/install-pnpm.sh install
-      - name: Install the app (upstream plugin, unmodified)
-        run: dogfood/payload/stack.sh build vendor
-      - name: Start Postgres (password made here, masked)
-        run: dogfood/payload/stack.sh pg
-      - name: Start the app
-        run: dogfood/payload/stack.sh start vendor
-      - name: Seed users, the MCP key, the fixed rows and the bystanders
-        run: node dogfood/payload/setup.mjs
-      - name: Snapshot the documents the tester does not create
-        run: node dogfood/payload/snap.mjs > "$RUNNER_TEMP/snap-before.json"
+      # gVisor, the firewall and the hostile self test on this very runner, before any third-party code runs.
+      - id: sandbox
+        name: Sandbox guard (gVisor, firewall, self test)
+        uses: isokron-ai/mcp-surface-corpus/sandbox-guard@78a7834cf028507b03e90e266b87bebeacfccd51 # SANDBOX_REF
+      - name: The guard ran the pinned sandbox and passed
+        env:
+          VERDICT: ${{ steps.sandbox.outputs.verdict }}
+          GUARD_SHA: ${{ steps.sandbox.outputs.sandbox-sha }}
+        run: dogfood/sandbox-guarded.sh
+      - name: Sandbox up (the workspace mirrored into it; 127.0.0.1:4960 is the app at .5)
+        run: node dogfood/sbx.mjs up --fwd 4960=5:4960
+      # pnpm install runs the packages' install scripts (esbuild, sharp, Next's SWC: platform packages from the registry).
+      - name: Install the app (upstream plugin, unmodified) (in the sandbox)
+        run: node dogfood/sbx.mjs build --image node22-build --hosts registry.npmjs.org --cwd . --path .sbx-pnpm/bin --minutes 25 -- dogfood/payload/stack.sh build vendor
+      # Postgres in its own image under gVisor, as the sandbox user, data under the container's /tmp; its password is
+      # made by the driver and written to pg-secrets/pw in the work volume only (never in the runner's environment).
+      - name: Start Postgres (a service of the sandbox's run network)
+        run: >-
+          node dogfood/sbx.mjs svc --name pg --ip 6 --image-ref "$PG_IMAGE" --workdir /tmp --entrypoint /bin/sh
+          --secret-env "POSTGRES_PASSWORD=$RUNNER_TEMP/pg-secrets/pw" -- -c "$PG_START"
+      - name: Wait for Postgres; DATABASE_URL into the sandbox's env (in the sandbox)
+        run: node dogfood/sbx.mjs exec -- dogfood/payload/stack.sh pg
+      - name: The app's .env (in the sandbox)
+        run: node dogfood/sbx.mjs exec -- dogfood/payload/stack.sh env vendor
+      - name: Start the app (next dev, a service of the sandbox's run network)
+        run: >-
+          node dogfood/sbx.mjs svc --name app --ip 5 --image node22 --cwd exp/harness/app --wrap
+          --env NEXT_TELEMETRY_DISABLED=1 --env NODE_OPTIONS=--no-deprecation
+          -- node_modules/.bin/next dev -H 0.0.0.0 -p 4960
+      - name: Wait for the app (in the sandbox)
+        run: node dogfood/sbx.mjs exec -- dogfood/payload/stack.sh wait
+      - name: Seed users, the MCP key, the fixed rows and the bystanders (in the sandbox)
+        run: node dogfood/sbx.mjs exec -- node dogfood/payload/setup.mjs
+      - name: Snapshot the documents the tester does not create (in the sandbox)
+        run: node dogfood/sbx.mjs exec -- sh -c 'node dogfood/payload/snap.mjs > "$RUNNER_TEMP/snap-before.json"'
       - id: plan
         name: Plan
         uses: ./
@@ -388,7 +521,7 @@ jobs:
           manifest: dogfood/payload/writecheck.vendor.yaml
           mode: plan
           artifact-name: payload-vendor-plan
-          cli-path: ${{ env.MWSC_CLI_PATH }}
+          cli-path: dogfood/sbx-cli
       - name: Compare the plan hash with the accepted one
         env:
           SEEN: ${{ steps.plan.outputs.plan-hash }}
@@ -403,16 +536,22 @@ jobs:
           confirm-target: dogfood-payload-vendor-3.93.0
           plan-hash: ${{ env.ACCEPTED_PLAN_HASH }}
           artifact-name: payload-vendor-full
-          cli-path: ${{ env.MWSC_CLI_PATH }}
+          cli-path: dogfood/sbx-cli
       - name: Check the documents the tester does not create
         if: always() && steps.full.outcome != 'skipped'
-        run: node dogfood/payload/snap.mjs --compare "$RUNNER_TEMP/snap-before.json"
-      - name: Stop the app
+        run: node dogfood/sbx.mjs exec -- node dogfood/payload/snap.mjs --compare "$RUNNER_TEMP/snap-before.json"
+      - name: The app's log, when a step failed
+        if: failure()
+        run: node dogfood/sbx.mjs logs app 150
+      - name: End the sandbox
         if: always()
-        run: dogfood/payload/stack.sh stop
+        run: node dogfood/sbx.mjs down
+      - name: Stop Docker, and check nothing of the sandbox is left
+        if: always()
+        run: loop/teardown.sh
 
   t0-manifest:
-    needs: [t0-start, research, research-shim, vendor]
+    needs: [t0-start, conformance, research, research-shim, vendor]
     if: ${{ always() && needs.t0-start.outputs.go == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -439,3 +578,4 @@ jobs:
           item-index: 0
           fence: ${{ needs.t0-start.outputs.fence }}
           run-key: ${{ needs.t0-start.outputs.run_key }}
+          dry-run: ${{ inputs.proof && 'true' || 'false' }}
