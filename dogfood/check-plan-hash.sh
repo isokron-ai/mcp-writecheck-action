@@ -25,6 +25,15 @@ if [ -n "$key" ] && [ -n "${PLAN_HASHES:-}" ]; then
     esac
   done
 fi
+# One machine-readable row per comparison, read by .github/workflows/hash-table.yml (dogfood/hash-table.mjs):
+# a notice annotation titled plan-hash-row plus a line in the job summary. Written before any check, so a
+# failing comparison still reports its hashes. HASH_CELL names a matrix cell. Nothing here accepts a hash.
+row_val() { printf '%s' "$1" | tr -c 'A-Za-z0-9._:=-' '_' | cut -c1-64; }
+row=$(printf '{"workflow":"%s","job":"%s","key":"%s","cell":"%s","pinned":"%s","accepted":"%s","seen":"%s"}' \
+  "$(row_val "${GITHUB_WORKFLOW:-}")" "$(row_val "${GITHUB_JOB:-}")" "$(row_val "$key")" "$(row_val "${HASH_CELL:-}")" \
+  "$(row_val "$pinned")" "$(row_val "$accepted")" "$(row_val "$seen")")
+echo "::notice title=plan-hash-row::$row"
+[ -z "${GITHUB_STEP_SUMMARY:-}" ] || echo "plan-hash-row: $row" >> "$GITHUB_STEP_SUMMARY"
 if ! printf '%s' "$accepted" | grep -Eq '^[0-9a-f]{16}$'; then
   echo "::error::the accepted plan hash for ${key:-this job} is not a plan hash"
   exit 1

@@ -67,6 +67,11 @@ on:
         description: "Accepted plan hashes for that CLI, after reading the plans: space-separated job=hash pairs (jobs: clean, defects, crash, setup)."
         required: false
         default: ''
+      proof:
+        description: Build the result bundle in a dry run (no encryption, no upload). Use for a dispatch no pump attempt issued.
+        type: boolean
+        required: false
+        default: false
 
 permissions: {}
 
@@ -346,7 +351,7 @@ jobs:
     timeout-minutes: 15
     strategy:
       fail-fast: false
-      max-parallel: 20
+      max-parallel: 5
       matrix:
         include: ${{ fromJSON(needs.defect-list.outputs.cells) }}
     env:
@@ -387,6 +392,7 @@ jobs:
       - name: Compare the plan hash with the accepted one
         env:
           SEEN: ${{ steps.plan.outputs.plan-hash }}
+          HASH_CELL: ${{ matrix.defect }}
         run: dogfood/check-plan-hash.sh "$PLAN_HASH" "$SEEN"
       - id: full
         name: Full run (fail-on none; the next step decides)
@@ -551,3 +557,4 @@ jobs:
           item-index: 0
           fence: ${{ needs.t0-start.outputs.fence }}
           run-key: ${{ needs.t0-start.outputs.run_key }}
+          dry-run: ${{ inputs.proof && 'true' || 'false' }}
