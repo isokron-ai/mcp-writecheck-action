@@ -70,7 +70,8 @@ for (const [name, text] of [['corpus.yml', worker], ['loop-fixture.yml', fixture
 test('corpus.yml: the pump\'s worker contract (dispatch only, four inputs, run name, guard first)', () => {
   const b = body(worker);
   assert.match(b, /^on:\n {2}workflow_dispatch:\n {4}inputs:\n {6}shard_id:\n[\s\S]*? {6}attempt_id:\n[\s\S]*? {6}items:\n/m);
-  assert.equal((b.match(/^ {6}[a-z_-]+:\n {8}description:/gm) ?? []).length, 4, 'exactly four inputs (tool_sha, R-WC-28)');
+  // Four inputs (tool_sha, R-WC-28), and the seven mode inputs of tool-qa's write-backend contract (R-WCF-07).
+  assert.equal((b.match(/^ {6}[a-z_-]+:\n {8}description:/gm) ?? []).length, 11, 'exactly eleven inputs');
   assert.doesNotMatch(b, /^ {2}(push|pull_request|schedule):/m);
   assert.match(b, /^run-name: shard \$\{\{ inputs\.shard_id \}\}$/m);
   const guard = b.slice(b.indexOf('\n  guard:'), b.indexOf('\n  writecheck:'));
@@ -95,7 +96,7 @@ test('corpus.yml: the pump\'s worker contract (dispatch only, four inputs, run n
 });
 
 test('loop-fixture.yml runs the worker\'s steps unchanged, on pull requests from this repository only', () => {
-  const norm = (t) => shared(t).replace(/steps\.inputs\.outputs\.(items|shard_id|attempt_id|tool_sha)/g, 'inputs.$1');
+  const norm = (t) => shared(t).replace(/steps\.inputs\.outputs\.(items|shard_id|attempt_id|tool_sha|mode|backend_kind|backend|stand_in|spec_url|spec_format|env_names)\b/g, 'inputs.$1');
   assert.ok(shared(worker).length > 500);
   assert.equal(norm(fixture), shared(worker));
   const b = body(fixture);

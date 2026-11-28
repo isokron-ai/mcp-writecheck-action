@@ -69,6 +69,8 @@ jobs:
             echo "attempt_id=$shard"
             echo "items=$items"
             echo "tool_sha="
+            # A default shard: no mode inputs (loop-full-proof.yml runs a full-mode one).
+            for k in mode backend backend_kind stand_in spec_url spec_format env_names; do echo "$k="; done
           } >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -116,11 +118,25 @@ jobs:
           SHARD_ID: ${{ steps.inputs.outputs.shard_id }}
           ATTEMPT_ID: ${{ steps.inputs.outputs.attempt_id }}
           ITEMS: ${{ steps.inputs.outputs.items }}
+          WC_MODE: ${{ steps.inputs.outputs.mode }}
+          WC_BACKEND: ${{ steps.inputs.outputs.backend }}
+          WC_BACKEND_KIND: ${{ steps.inputs.outputs.backend_kind }}
+          WC_STAND_IN: ${{ steps.inputs.outputs.stand_in }}
+          WC_SPEC_URL: ${{ steps.inputs.outputs.spec_url }}
+          WC_SPEC_FORMAT: ${{ steps.inputs.outputs.spec_format }}
+          WC_ENV_NAMES: ${{ steps.inputs.outputs.env_names }}
+          LANE_WRITECHECK_FULL_ENABLED: ${{ vars.LANE_WRITECHECK_FULL_ENABLED }}
         run: |
           # --mck only when the checkout's own loop/prepare.sh fetched the resolver: this YAML runs from main while the
           # lane code may be an older pinned commit (tool_sha), whose driver does not take --mck (WC14).
           mck=(); if [ -d mck/corpus ]; then mck=(--mck mck); fi
-          node loop/run-items.mjs --msc msc "${mck[@]}" --cli "$MWSC_CLI_PATH" --seed toolqa/history/seed-v1.json --out "$RUNNER_TEMP/wc" --lane ci
+          # A shard with mode inputs runs through loop/full/run.mjs (the same driver, with full mode around it); a default
+          # shard runs loop/run-items.mjs as before; a mode shard on a pinned commit without loop/full/ stops here.
+          driver=loop/run-items.mjs
+          if [ -n "$WC_MODE$WC_BACKEND$WC_BACKEND_KIND$WC_STAND_IN$WC_SPEC_URL$WC_SPEC_FORMAT$WC_ENV_NAMES" ]; then
+            if [ -f loop/full/run.mjs ]; then driver=loop/full/run.mjs; else echo "::error title=writecheck::the pinned commit has no mode support; a mode shard is never run as a default one"; exit 1; fi
+          fi
+          node "$driver" --msc msc "${mck[@]}" --cli "$MWSC_CLI_PATH" --seed toolqa/history/seed-v1.json --out "$RUNNER_TEMP/wc" --lane ci
       - id: teardown
         name: End the sandbox before anything is sealed
         if: ${{ !cancelled() }}

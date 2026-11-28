@@ -1,0 +1,82 @@
+# Thin declarations for writecheck's full mode (owner decision 27 Nov, OWNER-NOTES.md section 7, item 2): plain code
+# (loop/full/declare.mjs, no model) turns each server's tools/list (a catalog.json of the CLI's catalog stage) and a
+# stand-in's own seed into the minimal mcp-writecheck manifest full mode would run, and keeps them as an artifact.
+# What a declaration holds and never holds is in loop/full/declare.mjs; a server for which none can be made is listed
+# in index.json with code declaration_missing. The credentials are placeholders: a full-mode run makes its own.
+#
+#   workflow_dispatch  from main: run_id (a run of this repository whose artifact holds catalog.json files), artifact,
+#                      stand_in (a key of loop/full/standins.json)
+#   workflow_call      from a run of this repository (loop-full-proof.yml): artifact and stand_in, from the same run
+#
+# The worker makes the same declaration in-process for every item of a full-mode shard (loop/full/unit.mjs), so the
+# corpus run needs no artifact of target data. No secret, no environment, read permissions only; the catalogs are data,
+# never run.
+
+name: declarations
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: A run of this repository whose artifact holds the catalog.json files.
+        required: true
+        type: string
+      artifact:
+        description: The artifact's name.
+        required: true
+        type: string
+      stand_in:
+        description: The stand-in (a key of loop/full/standins.json).
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      artifact: { type: string, required: true }
+      stand_in: { type: string, required: true }
+      run_id: { type: string, required: false, default: '' }
+
+permissions: {}
+
+jobs:
+  declare:
+    name: declarations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Check the inputs
+        env:
+          RUN_ID: ${{ inputs.run_id }}
+          ARTIFACT: ${{ inputs.artifact }}
+          STAND_IN: ${{ inputs.stand_in }}
+        run: |
+          if [ -n "$RUN_ID" ] && [[ ! "$RUN_ID" =~ ^[0-9]{1,20}$ ]]; then echo "::error title=declarations::run_id is a run number"; exit 1; fi
+          if [[ ! "$ARTIFACT" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then echo "::error title=declarations::artifact is malformed"; exit 1; fi
+          if [[ ! "$STAND_IN" =~ ^[a-z0-9][a-z0-9_.-]{0,63}$ ]]; then echo "::error title=declarations::stand_in is malformed"; exit 1; fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Fetch the catalogs (data)
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ inputs.artifact }}
+          path: ${{ runner.temp }}/catalogs
+          run-id: ${{ inputs.run_id || github.run_id }}
+          github-token: ${{ github.token }}
+      - name: Make the thin declarations
+        env:
+          STAND_IN: ${{ inputs.stand_in }}
+        run: node loop/full/declare.mjs --catalogs "$RUNNER_TEMP/catalogs" --stand-in "$STAND_IN" --out "$RUNNER_TEMP/declarations"
+      - name: Keep the declarations (14 days)
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: declarations-${{ inputs.stand_in }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/declarations/
+          if-no-files-found: error
+          retention-days: 14

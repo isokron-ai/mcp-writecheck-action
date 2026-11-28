@@ -1,0 +1,229 @@
+# Proof of writecheck's full mode on GitHub, on every pull request that touches it: the worker's own steps (the same as
+# corpus.yml's, test/loop-full.test.mjs checks they match), on a full-mode shard of one real third-party server,
+# typesensekit/typesensekit (npm @typesensekit/mcp, MIT, a subject of tool-qa's seed), whose backend is Typesense. The
+# stand-in is Typesense itself (loop/full/standins.json: the official image pinned by digest, fidelity real), started
+# as a sandbox service on the run network, seeded, and wired to the server's own env names (loop/full/env-wire.mjs).
+# The CLI plans a thin declaration made from tools/list (loop/full/declare.mjs); the rule check
+# (loop/full/rule-check.mjs) accepts it with no person only when every write target is the stand-in; then the full write
+# test runs in the sandbox. Two legs:
+#   accepted  as above: the plan is accepted by the rule and the full write test runs
+#   refused   FULL_PROOF_MUTATION=foreign_target (read only in this proof): the server's URL points at 192.0.2.10
+#             (TEST-NET-1, and the run network has no way out); the rule check must refuse the plan, and the full write
+#             test must never start
+# The worker-kit builds the bundle in a dry run (no encryption, no upload), tool-qa's ingest at the pinned commit judges
+# it (loop/check-bundles.mjs), and loop/full/proof-check.mjs checks the full-mode part. The job log and the artifact hold
+# codes, names, hosts and counts only: no verdict of the server is printed or kept, and the plaintext bundle is not
+# uploaded. The catalog stage's catalog.json (the server's public tools/list) goes to the declarations workflow, which
+# makes the thin declarations as an artifact.
+#
+# No secret, no environment, a token with contents: read only, no pull_request_target. A pull request from a fork
+# runs nothing here. Full mode needs no repository variable here: the proof is the one place it runs with
+# LANE_WRITECHECK_FULL_ENABLED off (loop/full/contract.mjs isFullProofLane).
+
+name: loop-full-proof
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/corpus.yml
+      - .github/workflows/loop-full-proof.yml
+      - .github/workflows/declarations.yml
+      - loop/full/**
+      - loop/run-items.mjs
+      - loop/items.mjs
+      - loop/summary.mjs
+      - loop/bundle.mjs
+      - loop/launch.mjs
+      - loop/skips.mjs
+      - loop/sandbox/**
+      - loop/prepare.sh
+      - loop/teardown.sh
+      - dogfood/build-cli.sh
+      - dogfood/cli-ref.sh
+      - contract.mjs
+
+permissions: {}
+
+concurrency:
+  group: loop-full-proof-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  WORKER_KIT_REF: '2ffcea16117ec679398f83eefe8c6fa66d38bac6'
+  SEED_REF: '2ffcea16117ec679398f83eefe8c6fa66d38bac6'
+  SANDBOX_REF: '78a7834cf028507b03e90e266b87bebeacfccd51'
+  # isokron-ai/mcp-check at the commit tool-qa's live-probe lane runs (pump/workflows.json, live-probe versions.tool): its
+  # resolver chooses an OCI subject's image for this lane too (loop/launch.mjs, WC14), so both lanes run the same image.
+  MCP_CHECK_REF: 'dbfea01367f58c500c781048d0cfb480796ae005'
+
+jobs:
+  conformance:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+    uses: isokron-ai/mcp-surface-corpus/.github/workflows/sandbox-conformance.yml@78a7834cf028507b03e90e266b87bebeacfccd51 # SANDBOX_REF
+    with:
+      mutations: false
+      artifact-prefix: loop-full-proof-conformance
+
+  full:
+    needs: conformance
+    if: github.event.pull_request.head.repo.full_name == github.repository && needs.conformance.outputs.verdict == 'pass'
+    name: loop-full-proof (${{ matrix.leg }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - leg: accepted
+            mutation: ''
+          - leg: refused
+            mutation: foreign_target
+    env:
+      FULL_PROOF_MUTATION: ${{ matrix.mutation }}
+      FULL_PROOF_LEG: ${{ matrix.leg }}
+    steps:
+      - id: inputs
+        name: The full-mode shard
+        run: |
+          shard="full-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${FULL_PROOF_LEG}"
+          key() { printf '%s' "$1-$shard" | sha256sum | cut -d' ' -f1; }
+          items=$(printf '[{"subject":"typesensekit/typesensekit","run_key":"%s","fence":1}]' "$(key ts)")
+          {
+            echo "shard_id=$shard"
+            echo "attempt_id=$shard"
+            echo "items=$items"
+            echo "tool_sha="
+            # As tool-qa's pump would send it for this subject (write_backend class local_full, stand-in typesense): the
+            # env names are the ones the server's own server.json declares.
+            echo "mode=full"
+            echo "backend=typesense"
+            echo "backend_kind=search"
+            echo "stand_in=typesense"
+            echo "spec_url="
+            echo "spec_format="
+            echo 'env_names=[["TYPESENSE_URL","TYPESENSE_API_KEY","TYPESENSE_CONNECTION_TIMEOUT_SECONDS","TYPESENSEKIT_READ_ONLY"]]'
+          } >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ steps.inputs.outputs.tool_sha || github.sha }}
+      # tool-qa R-PIN-01 (R-WC-28): the lane code is the commit the pump pinned (tool_sha), else this run's own commit; the
+      # job stops unless the checkout is exactly that commit, and the driver reports it as the mcp-writecheck-action that ran.
+      - name: The checkout is the commit to run
+        env:
+          TOOL_SHA: ${{ steps.inputs.outputs.tool_sha }}
+        run: |
+          head=$(git rev-parse HEAD)
+          want="${TOOL_SHA:-$GITHUB_SHA}"
+          if [ "$head" != "$want" ]; then echo "::error title=writecheck::the checkout is not the commit to run"; exit 1; fi
+          echo "ACTION_SHA=$head" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Check the items in full
+        env:
+          ITEMS: ${{ steps.inputs.outputs.items }}
+        run: node --input-type=module -e 'import { parseItems } from "./loop/items.mjs"; console.log(parseItems(process.env.ITEMS).length + " item(s)")'
+      - name: Choose the CLI commit
+        run: dogfood/cli-ref.sh
+      # The CLI first, before any third-party code runs in this job; then the sandbox's own code and the seed.
+      - name: Fetch and build
+        run: loop/prepare.sh fetch
+      # gVisor, the firewall and the hostile self test on this very runner, before any target; the step fails
+      # unless the telemetry check recomputes a pass.
+      - id: sandbox
+        name: Sandbox guard (gVisor, firewall, self test)
+        uses: isokron-ai/mcp-surface-corpus/sandbox-guard@78a7834cf028507b03e90e266b87bebeacfccd51 # SANDBOX_REF
+      - name: The guard ran the pinned sandbox and passed
+        env:
+          VERDICT: ${{ steps.sandbox.outputs.verdict }}
+          GUARD_SHA: ${{ steps.sandbox.outputs.sandbox-sha }}
+        run: |
+          [ "$VERDICT" = pass ] || { echo "::error::the sandbox self test did not pass"; exit 1; }
+          [ "$GUARD_SHA" = "$SANDBOX_REF" ] || { echo "::error::the sandbox guard ran another commit than SANDBOX_REF"; exit 1; }
+          [ "$(git -C msc rev-parse HEAD)" = "$SANDBOX_REF" ] || { echo "::error::the driver's sandbox checkout is not SANDBOX_REF"; exit 1; }
+      - id: run
+        name: Run the items in the sandbox
+        env:
+          SHARD_ID: ${{ steps.inputs.outputs.shard_id }}
+          ATTEMPT_ID: ${{ steps.inputs.outputs.attempt_id }}
+          ITEMS: ${{ steps.inputs.outputs.items }}
+          WC_MODE: ${{ steps.inputs.outputs.mode }}
+          WC_BACKEND: ${{ steps.inputs.outputs.backend }}
+          WC_BACKEND_KIND: ${{ steps.inputs.outputs.backend_kind }}
+          WC_STAND_IN: ${{ steps.inputs.outputs.stand_in }}
+          WC_SPEC_URL: ${{ steps.inputs.outputs.spec_url }}
+          WC_SPEC_FORMAT: ${{ steps.inputs.outputs.spec_format }}
+          WC_ENV_NAMES: ${{ steps.inputs.outputs.env_names }}
+          LANE_WRITECHECK_FULL_ENABLED: ${{ vars.LANE_WRITECHECK_FULL_ENABLED }}
+        run: |
+          # --mck only when the checkout's own loop/prepare.sh fetched the resolver: this YAML runs from main while the
+          # lane code may be an older pinned commit (tool_sha), whose driver does not take --mck (WC14).
+          mck=(); if [ -d mck/corpus ]; then mck=(--mck mck); fi
+          # A shard with mode inputs runs through loop/full/run.mjs (the same driver, with full mode around it); a default
+          # shard runs loop/run-items.mjs as before; a mode shard on a pinned commit without loop/full/ stops here.
+          driver=loop/run-items.mjs
+          if [ -n "$WC_MODE$WC_BACKEND$WC_BACKEND_KIND$WC_STAND_IN$WC_SPEC_URL$WC_SPEC_FORMAT$WC_ENV_NAMES" ]; then
+            if [ -f loop/full/run.mjs ]; then driver=loop/full/run.mjs; else echo "::error title=writecheck::the pinned commit has no mode support; a mode shard is never run as a default one"; exit 1; fi
+          fi
+          node "$driver" --msc msc "${mck[@]}" --cli "$MWSC_CLI_PATH" --seed toolqa/history/seed-v1.json --out "$RUNNER_TEMP/wc" --lane ci
+      - id: teardown
+        name: End the sandbox before anything is sealed
+        if: ${{ !cancelled() }}
+        run: loop/teardown.sh
+      - id: kit0
+        name: Build bundle 0 (dry run)
+        if: ${{ !cancelled() && steps.teardown.outcome == 'success' && steps.run.outputs.controls_ok == 'true' && steps.run.outputs.has_0 == 'true' }}
+        uses: isokron-ai/tool-qa/worker-kit@2ffcea16117ec679398f83eefe8c6fa66d38bac6 # WORKER_KIT_REF
+        with:
+          bundle-dir: ${{ runner.temp }}/wc/0/bundle
+          meta-file: ${{ runner.temp }}/wc/0/meta.json
+          attempt-id: ${{ steps.inputs.outputs.attempt_id }}
+          item-index: '0'
+          fence: ${{ steps.run.outputs.fence_0 }}
+          run-key: ${{ steps.run.outputs.run_key_0 }}
+          dry-run: 'true'
+      - name: Fetch tool-qa's ingest at the pinned commit
+        if: ${{ !cancelled() && steps.run.outputs.controls_ok == 'true' }}
+        run: |
+          git init -q toolqa-ingest
+          git -C toolqa-ingest remote add origin https://github.com/isokron-ai/tool-qa.git
+          git -C toolqa-ingest sparse-checkout set --no-cone /ingest/ /worker-kit/ /scripts/lib/
+          git -C toolqa-ingest fetch -q --depth 1 --filter=blob:none origin "$WORKER_KIT_REF"
+          git -C toolqa-ingest -c advice.detachedHead=false checkout -q FETCH_HEAD
+          [ "$(git -C toolqa-ingest rev-parse HEAD)" = "$WORKER_KIT_REF" ]
+      - name: Judge the bundle as tool-qa's ingest does
+        if: ${{ !cancelled() && steps.run.outputs.controls_ok == 'true' }}
+        env:
+          ATTEMPT_ID: ${{ steps.inputs.outputs.attempt_id }}
+          ITEMS: ${{ steps.inputs.outputs.items }}
+          BUNDLE_0: ${{ steps.kit0.outputs.bundle-path }}
+        run: node loop/check-bundles.mjs --toolqa toolqa-ingest
+      - name: Check the full-mode part of the bundle
+        if: ${{ !cancelled() && steps.run.outputs.has_0 == 'true' }}
+        run: node loop/full/proof-check.mjs --out "$RUNNER_TEMP/wc" --expect "$FULL_PROOF_LEG" --summary "$RUNNER_TEMP/full-proof/summary.json" --catalog-out "$RUNNER_TEMP/full-proof/catalog"
+      - name: Keep the proof summary and the server's tools/list (7 days)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: loop-full-proof-${{ matrix.leg }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/full-proof/
+          if-no-files-found: warn
+          retention-days: 7
+
+  # The thin declarations, made by the declarations workflow (plain code, no model) from the accepted leg's catalog.json.
+  declarations:
+    needs: full
+    if: ${{ !cancelled() && needs.full.result != 'skipped' }}
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/declarations.yml
+    with:
+      artifact: loop-full-proof-accepted-${{ github.run_id }}-${{ github.run_attempt }}
+      stand_in: typesense
