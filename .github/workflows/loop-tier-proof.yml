@@ -21,17 +21,17 @@ concurrency:
 env:
   WORKER_KIT_REF: '2ffcea16117ec679398f83eefe8c6fa66d38bac6'
   SEED_REF: '2ffcea16117ec679398f83eefe8c6fa66d38bac6'
-  SANDBOX_REF: '78a7834cf028507b03e90e266b87bebeacfccd51'
+  SANDBOX_REF: '3738f2c3dabe03e943a1e5ff0a2441aca831e910'
   # isokron-ai/mcp-check at the commit tool-qa's live-probe lane runs (pump/workflows.json, live-probe versions.tool): its
   # resolver chooses an OCI subject's image for this lane too (loop/launch.mjs, WC14), so both lanes run the same image.
-  MCP_CHECK_REF: 'dbfea01367f58c500c781048d0cfb480796ae005'
+  MCP_CHECK_REF: 'e89d084bdbdddd0e40726b14a27d57f0f1844098'
 
 jobs:
   conformance:
     if: github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       contents: read
-    uses: isokron-ai/mcp-surface-corpus/.github/workflows/sandbox-conformance.yml@78a7834cf028507b03e90e266b87bebeacfccd51 # SANDBOX_REF
+    uses: isokron-ai/mcp-surface-corpus/.github/workflows/sandbox-conformance.yml@3738f2c3dabe03e943a1e5ff0a2441aca831e910 # SANDBOX_REF
     with:
       mutations: false
       artifact-prefix: loop-tier-proof-conformance
@@ -96,7 +96,7 @@ jobs:
       # unless the telemetry check recomputes a pass.
       - id: sandbox
         name: Sandbox guard (gVisor, firewall, self test)
-        uses: isokron-ai/mcp-surface-corpus/sandbox-guard@78a7834cf028507b03e90e266b87bebeacfccd51 # SANDBOX_REF
+        uses: isokron-ai/mcp-surface-corpus/sandbox-guard@3738f2c3dabe03e943a1e5ff0a2441aca831e910 # SANDBOX_REF
       - name: The guard ran the pinned sandbox and passed
         env:
           VERDICT: ${{ steps.sandbox.outputs.verdict }}
