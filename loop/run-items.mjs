@@ -137,7 +137,7 @@ export const MSC_NEEDS = [
 ];
 
 /** mcp-surface-corpus's sandbox library, from a checkout at a pinned commit; every name the driver uses must be there. */
-async function loadMsc(dir) {
+export async function loadMsc(dir) {
   const mods = await Promise.all(MSC_MODULES.map((p) => import(pathToFileURL(join(dir, p)).href)));
   const M = Object.assign({}, ...mods);
   const missing = MSC_NEEDS.filter((n) => M[n] === undefined);

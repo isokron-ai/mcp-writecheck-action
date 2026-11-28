@@ -20,6 +20,14 @@
 # longer needs `cli-ref`. A dispatch with `kronicle-lite-ref` builds another kronicle-lite commit (its
 # plans differ: pass their hashes in `plan-hashes`). Scheduled, pull-request and push runs are unchanged.
 #
+# The sandbox: kronicle-lite's install and build, the seeding and every run of the server (the CLI starts it) run
+# inside isokron-ai/mcp-surface-corpus's sandbox at SANDBOX_REF, the same one the writecheck lane (corpus.yml) uses,
+# through dogfood/sbx.mjs: gVisor, user 65534, no capability, a read-only root, no runner environment, the install
+# reaching registry.npmjs.org only through the allowlist proxy, and the run with no network out at all. The
+# reusable sandbox-conformance job and, on this job's own runner, the sandbox-guard action must pass first, both
+# at SANDBOX_REF. The action itself and the checks after it run on the runner and only read the results that come
+# back as data. The sealed bundle is built by t0-manifest, another job that runs none of this code.
+#
 # Security: no pull_request_target. A pull request from a fork runs nothing here (each job's `if:`).
 # No secret is used: isokron-ai/mcp-write-safety is public, so the "Check out mcp-writecheck" step
 # needs no token; the action gets the built CLI through cli-path. Third-party actions are pinned by full SHA.
@@ -75,6 +83,9 @@ concurrency:
 
 env:
   PLAN_HASHES: ${{ inputs.plan-hashes }}
+  # isokron-ai/mcp-surface-corpus main at 78a7834, the commit its nightly conformance tests (as corpus.yml). The
+  # conformance job and the sandbox-guard step name this same commit (test/dogfood-sandbox.test.mjs checks).
+  SANDBOX_REF: '78a7834cf028507b03e90e266b87bebeacfccd51'
   # isokron-ai/kronicle-lite 0.11.2 (14 Nov 2026), or the dispatch input kronicle-lite-ref.
   KL_REF: ${{ inputs.kronicle-lite-ref || '3bac5a73266c668fe77ed831924cded90e18a7b0' }}
   # dogfood/kronicle-lite/candidate-manifest.sh replaces both on a candidate-manifest dispatch.
@@ -123,15 +134,27 @@ jobs:
             echo "run_key=$IN_RUN_KEY"
           } >> "$GITHUB_OUTPUT"
 
-  own:
+  # The sandbox proven on today's runner image before the job that runs kronicle-lite starts.
+  conformance:
     needs: t0-start
+    if: needs.t0-start.outputs.go == 'true'
     permissions:
       contents: read
-    if: needs.t0-start.outputs.go == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    uses: isokron-ai/mcp-surface-corpus/.github/workflows/sandbox-conformance.yml@78a7834cf028507b03e90e266b87bebeacfccd51 # SANDBOX_REF
+    with:
+      mutations: false
+      artifact-prefix: dogfood-kronicle-lite-conformance
+
+  own:
+    needs: [t0-start, conformance]
+    permissions:
+      contents: read
+    if: needs.t0-start.outputs.go == 'true' && needs.conformance.outputs.verdict == 'pass' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40
     env:
       PLAN_HASH: ddf41337c24a60ea
+      MSC_DIR: msc
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -163,6 +186,8 @@ jobs:
           persist-credentials: false
       - name: Build mcp-writecheck
         run: dogfood/build-cli.sh
+      - name: Fetch the sandbox (SANDBOX_REF)
+        run: loop/prepare.sh sandbox
       - name: Check out kronicle-lite
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -170,17 +195,26 @@ jobs:
           ref: ${{ env.KL_REF }}
           path: kl
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 22
-      # Install scripts run: better-sqlite3 installs its prebuilt native module that way.
+      # git only, on the checkout's data: no code of kronicle-lite runs here.
       - name: The kronicle-lite commit is on its main (kronicle-lite-ref)
         run: dogfood/kronicle-lite/check-on-main.sh
-      - name: Build kronicle-lite
-        working-directory: kl
-        run: npm ci --no-audit --no-fund && npm run build
-      - name: A fresh data directory, seeded
-        run: dogfood/kronicle-lite/setup.sh
+      # gVisor, the firewall and the hostile self test on this very runner, before any third-party code runs.
+      - id: sandbox
+        name: Sandbox guard (gVisor, firewall, self test)
+        uses: isokron-ai/mcp-surface-corpus/sandbox-guard@78a7834cf028507b03e90e266b87bebeacfccd51 # SANDBOX_REF
+      - name: The guard ran the pinned sandbox and passed
+        env:
+          VERDICT: ${{ steps.sandbox.outputs.verdict }}
+          GUARD_SHA: ${{ steps.sandbox.outputs.sandbox-sha }}
+        run: dogfood/sandbox-guarded.sh
+      - name: Sandbox up (the workspace mirrored into it)
+        run: node dogfood/sbx.mjs up
+      # Install scripts run: better-sqlite3 compiles its native module from source in the sandbox's build image
+      # (its prebuilt download is not on the allowlist), against the same Node as the run image.
+      - name: Build kronicle-lite (in the sandbox)
+        run: node dogfood/sbx.mjs build --image node22-build --hosts registry.npmjs.org --native --cwd kl -- sh -c 'npm ci --no-audit --no-fund && npm run build'
+      - name: A fresh data directory, seeded (in the sandbox)
+        run: node dogfood/sbx.mjs exec -- dogfood/kronicle-lite/setup.sh
       - id: plan
         name: Plan
         uses: ./
@@ -188,7 +222,7 @@ jobs:
           manifest: ${{ env.KL_MANIFEST }}
           mode: plan
           artifact-name: kronicle-lite-plan
-          cli-path: ${{ env.MWSC_CLI_PATH }}
+          cli-path: dogfood/sbx-cli
       - name: Compare the plan hash with the accepted one
         env:
           SEEN: ${{ steps.plan.outputs.plan-hash }}
@@ -200,7 +234,7 @@ jobs:
           mode: catalog
           fail-on: must
           artifact-name: kronicle-lite-catalog
-          cli-path: ${{ env.MWSC_CLI_PATH }}
+          cli-path: dogfood/sbx-cli
       # fail-on: none, and the next step compares the violated MUST records with the known ones; the
       # action still fails the step on its own safety rules (lost bystanders, unfinished clean-up, a
       # run that did not complete).
@@ -214,15 +248,21 @@ jobs:
           confirm-target: kronicle-lite-dogfood
           plan-hash: ${{ env.ACCEPTED_PLAN_HASH }}
           artifact-name: kronicle-lite-full
-          cli-path: ${{ env.MWSC_CLI_PATH }}
+          cli-path: dogfood/sbx-cli
       - name: Violated MUST records against the known ones
         if: always() && steps.full.outputs.results-path != ''
         env:
           RESULTS: ${{ steps.full.outputs.results-path }}
         run: node dogfood/expect-violations.mjs "$KL_KNOWN" "$RESULTS"
+      - name: End the sandbox
+        if: always()
+        run: node dogfood/sbx.mjs down
+      - name: Stop Docker, and check nothing of the sandbox is left
+        if: always()
+        run: loop/teardown.sh
 
   t0-manifest:
-    needs: [t0-start, own]
+    needs: [t0-start, conformance, own]
     if: ${{ always() && needs.t0-start.outputs.go == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
