@@ -1,0 +1,16 @@
+{
+  "format": "isokron-writecheck-standins/1",
+  "about": "Full mode's pinned allowlist of stand-in backends (loop/full/contract.mjs). A full-mode shard names a backend id, its kind and a stand-in id (tool-qa docs/INTERFACES.md, \"Writecheck modes: the write-backend contract\"); each is only a name to look up here. A stand-in is started only from the image pinned here by its multi-platform index digest, as a sandbox service on the run network, from the folder `dir` (standin.json: the command, the address, the credentials it is given, the env prefixes it answers to, the guard and fixture it seeds; seed.mjs, evidence.mjs: our own code, run in our helper image). `backends` maps each backend id this stand-in serves to its kind. `fidelity` is the stand-in map's word (tool-qa meta/data/stand-ins.json): real = the product itself, faithful = another implementation whose own semantics hold, partial or not_faithful = not enough for the backend-semantic requirements; only real and faithful may judge UPD-1/2, CONC-1/2/3, TGT-1/3, RES-1 and ATOM-2 (loop/full/results.mjs). Add or change a stand-in only by a reviewed commit, with its digest read from the registry.",
+  "stand_ins": {
+    "typesense": {
+      "product": "Typesense",
+      "licence": "GPL-3.0",
+      "fidelity": "real",
+      "backends": { "typesense": "search" },
+      "image": "docker.io/typesense/typesense:30.1@sha256:91604dc128e2023e7cba34ae8bd36f68351bcb74ea33a84960bfdc5649cf43b3",
+      "version": "Typesense 30.1 (official image)",
+      "dir": "loop/full/standins/typesense",
+      "recorded": "2026-11-28: index digest from registry-1.docker.io; linux/amd64 sha256:adef8d1b8ba2260d8fafe896cc9b4ec6ddb718aa63d5c640c6e3ab19eb54200d, linux/arm64 sha256:ba4492cab5113ad74c92767d8ad00d8f1db935ad442da40ed962a74a1b943c86; Entrypoint /opt/typesense-server, no User, no Volumes"
+    }
+  }
+}

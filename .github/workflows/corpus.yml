@@ -50,6 +50,45 @@ on:
         required: false
         type: string
         default: ''
+      # The mode inputs of tool-qa's write-backend contract (docs/INTERFACES.md, "Writecheck modes", PR #119): sent only
+      # in a mode shard, every one a name the worker looks up in its own allowlist (loop/full/contract.mjs). Empty for
+      # a default shard, which then runs exactly as before. Full mode also needs this repository's own switch,
+      # LANE_WRITECHECK_FULL_ENABLED (exactly "true"); min mode is not wired yet (a skip of ours).
+      mode:
+        description: Writecheck mode of the shard (full or min); empty for a default shard.
+        required: false
+        type: string
+        default: ''
+      backend:
+        description: The backend id (a key of tool-qa meta/data/stand-ins.json or spec-urls.json).
+        required: false
+        type: string
+        default: ''
+      backend_kind:
+        description: The backend kind (sql, kv, document, search, ...).
+        required: false
+        type: string
+        default: ''
+      stand_in:
+        description: Full mode only. The stand-in id, looked up in loop/full/standins.json.
+        required: false
+        type: string
+        default: ''
+      spec_url:
+        description: Min mode only. The API description's https URL.
+        required: false
+        type: string
+        default: ''
+      spec_format:
+        description: Min mode only. The description's format.
+        required: false
+        type: string
+        default: ''
+      env_names:
+        description: 'JSON list aligned with items: per item, the env var names its server reads (names only).'
+        required: false
+        type: string
+        default: ''
 
 run-name: shard ${{ inputs.shard_id }}
 
@@ -140,6 +179,13 @@ jobs:
           ATTEMPT_ID: ${{ inputs.attempt_id }}
           ITEMS: ${{ inputs.items }}
           TOOL_SHA: ${{ inputs.tool_sha }}
+          WC_MODE: ${{ inputs.mode }}
+          WC_BACKEND: ${{ inputs.backend }}
+          WC_BACKEND_KIND: ${{ inputs.backend_kind }}
+          WC_STAND_IN: ${{ inputs.stand_in }}
+          WC_SPEC_URL: ${{ inputs.spec_url }}
+          WC_SPEC_FORMAT: ${{ inputs.spec_format }}
+          WC_ENV_NAMES: ${{ inputs.env_names }}
         run: |
           # Whole-string checks: a newline or control character anywhere fails the match. loop/items.mjs checks the
           # items in full (JSON, 1 to 10 entries, subject, run_key, fence) right after the checkout.
@@ -149,6 +195,13 @@ jobs:
           if [[ ! "$ATTEMPT_ID" =~ $id_re ]]; then echo "::error title=writecheck::attempt_id is malformed"; exit 1; fi
           if [[ ! "$ITEMS" =~ $items_re ]] || [ "${#ITEMS}" -gt 60000 ]; then echo "::error title=writecheck::items must be one line of JSON, a list of at most 60000 characters"; exit 1; fi
           if [ -n "$TOOL_SHA" ] && [[ ! "$TOOL_SHA" =~ ^[0-9a-f]{40}$ ]]; then echo "::error title=writecheck::tool_sha must be empty or a full commit SHA"; exit 1; fi
+          # The mode inputs, whole: names only (loop/full/contract.mjs looks each up in our allowlist after the checkout).
+          name_re='^([a-z0-9][a-z0-9_.-]{0,63})?$'
+          if [[ ! "$WC_MODE" =~ ^(|full|min)$ ]]; then echo "::error title=writecheck::mode must be empty, full or min"; exit 1; fi
+          for v in "$WC_BACKEND" "$WC_STAND_IN"; do if [[ ! "$v" =~ $name_re ]]; then echo "::error title=writecheck::backend and stand_in must be ids"; exit 1; fi; done
+          if [[ ! "$WC_BACKEND_KIND" =~ ^([a-z_]{1,32})?$ ]] || [[ ! "$WC_SPEC_FORMAT" =~ ^([a-z0-9_]{1,32})?$ ]]; then echo "::error title=writecheck::backend_kind and spec_format must be plain words"; exit 1; fi
+          if [ -n "$WC_SPEC_URL" ] && { [[ ! "$WC_SPEC_URL" =~ ^https://[^[:space:][:cntrl:]]+$ ]] || [ "${#WC_SPEC_URL}" -gt 512 ]; }; then echo "::error title=writecheck::spec_url must be an https URL of at most 512 characters"; exit 1; fi
+          if [ -n "$WC_ENV_NAMES" ] && { [[ ! "$WC_ENV_NAMES" =~ ^\[[^[:cntrl:]]*\]$ ]] || [ "${#WC_ENV_NAMES}" -gt 16000 ]; }; then echo "::error title=writecheck::env_names must be one line of JSON, a list of at most 16000 characters"; exit 1; fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -195,11 +248,25 @@ jobs:
           SHARD_ID: ${{ inputs.shard_id }}
           ATTEMPT_ID: ${{ inputs.attempt_id }}
           ITEMS: ${{ inputs.items }}
+          WC_MODE: ${{ inputs.mode }}
+          WC_BACKEND: ${{ inputs.backend }}
+          WC_BACKEND_KIND: ${{ inputs.backend_kind }}
+          WC_STAND_IN: ${{ inputs.stand_in }}
+          WC_SPEC_URL: ${{ inputs.spec_url }}
+          WC_SPEC_FORMAT: ${{ inputs.spec_format }}
+          WC_ENV_NAMES: ${{ inputs.env_names }}
+          LANE_WRITECHECK_FULL_ENABLED: ${{ vars.LANE_WRITECHECK_FULL_ENABLED }}
         run: |
           # --mck only when the checkout's own loop/prepare.sh fetched the resolver: this YAML runs from main while the
           # lane code may be an older pinned commit (tool_sha), whose driver does not take --mck (WC14).
           mck=(); if [ -d mck/corpus ]; then mck=(--mck mck); fi
-          node loop/run-items.mjs --msc msc "${mck[@]}" --cli "$MWSC_CLI_PATH" --seed toolqa/history/seed-v1.json --out "$RUNNER_TEMP/wc" --lane ci
+          # A shard with mode inputs runs through loop/full/run.mjs (the same driver, with full mode around it); a default
+          # shard runs loop/run-items.mjs as before; a mode shard on a pinned commit without loop/full/ stops here.
+          driver=loop/run-items.mjs
+          if [ -n "$WC_MODE$WC_BACKEND$WC_BACKEND_KIND$WC_STAND_IN$WC_SPEC_URL$WC_SPEC_FORMAT$WC_ENV_NAMES" ]; then
+            if [ -f loop/full/run.mjs ]; then driver=loop/full/run.mjs; else echo "::error title=writecheck::the pinned commit has no mode support; a mode shard is never run as a default one"; exit 1; fi
+          fi
+          node "$driver" --msc msc "${mck[@]}" --cli "$MWSC_CLI_PATH" --seed toolqa/history/seed-v1.json --out "$RUNNER_TEMP/wc" --lane ci
       - id: teardown
         name: End the sandbox before anything is sealed
         if: ${{ !cancelled() }}

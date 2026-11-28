@@ -1,0 +1,53 @@
+{
+  "format": "isokron-writecheck-standin/1",
+  "about": "How full mode starts, checks and seeds the Typesense stand-in (loop/full/unit.mjs). The service runs in a sandbox container of its own (gVisor, uid 65534, read-only root, no capability) at .<octet> of the run network, which has no way out; its data lives in the container's own /tmp and goes with it. {{api_key}} is a random value made for the unit; it is never a real credential. env_prefixes: the only server env names full mode sets (loop/full/env-wire.mjs); credentials: what a credential-like name is given. guard and fixture: the objects seed.mjs makes, which the thin declaration's guard and its read-only fixture resource name (loop/full/declare.mjs): the guard's text field carries a marker made for the unit, so the guard matches only when the server read this stand-in.",
+  "octet": 5,
+  "port": 8108,
+  "ports": [
+    8108,
+    8107
+  ],
+  "protocol": "http",
+  "entrypoint": "/bin/sh",
+  "args": [
+    "-c",
+    "mkdir -p /tmp/typesense-data && exec /opt/typesense-server \"$@\"",
+    "sh",
+    "--data-dir",
+    "/tmp/typesense-data",
+    "--api-key",
+    "{{api_key}}",
+    "--api-address",
+    "0.0.0.0",
+    "--api-port",
+    "8108",
+    "--peering-port",
+    "8107"
+  ],
+  "credentials": {
+    "api_key": "random_hex_24"
+  },
+  "env_prefixes": [
+    "TYPESENSE_"
+  ],
+  "health": {
+    "path": "/health",
+    "timeout_ms": 90000
+  },
+  "seed": "seed.mjs",
+  "evidence": "evidence.mjs",
+  "guard": {
+    "address": {
+      "collection": "mwsc_standin",
+      "id": "mwsc-standin-guard"
+    }
+  },
+  "fixture": {
+    "address": {
+      "collection": "mwsc_standin"
+    },
+    "id_key": "id",
+    "id": "mwsc-standin-fixture",
+    "name": "mwsc-standin-fixture"
+  }
+}

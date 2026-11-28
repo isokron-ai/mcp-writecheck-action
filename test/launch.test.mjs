@@ -98,7 +98,8 @@ test('R-WC-33: an OCI subject gets the image the live-probe resolver chooses, wi
   for (const wf of ['corpus.yml', 'loop-fixture.yml']) {
     const t = readFileSync(join(root, '.github', 'workflows', wf), 'utf8');
     // Only when the pinned checkout fetched it: an older pinned driver (tool_sha) does not take --mck.
-    assert.match(t, /mck=\(\); if \[ -d mck\/corpus \]; then mck=\(--mck mck\); fi\n\s*node loop\/run-items\.mjs --msc msc "\$\{mck\[@\]\}" /, wf);
+    // The driver is loop/run-items.mjs, or loop/full/run.mjs (the same driver with full mode around it) for a mode shard.
+    assert.match(t, /mck=\(\); if \[ -d mck\/corpus \]; then mck=\(--mck mck\); fi\n[\s\S]*?\n\s*driver=loop\/run-items\.mjs\n[\s\S]*?\n\s*node "\$driver" --msc msc "\$\{mck\[@\]\}" /, wf);
   }
   await assert.rejects(loadMck(mkdtempSync(join(tmpdir(), 'wc-no-mck-'))));
 });
