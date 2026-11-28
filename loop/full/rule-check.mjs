@@ -5,8 +5,8 @@
 // fixtures keep their person-accepted plan hashes (loop/fixtures.json); this check never applies to them.
 //
 // What is checked, all of it on the runner, as data, after the CLI's `plan` ran in the sandbox:
-//   1. The plan's own header, which the CLI prints before any text a target can influence: line 1 is
-//      "Plan <hash> for target <our confirm> (environment: test)" and line 2 is
+//   1. The plan's own header, which the CLI prints before any text a target can influence: its first
+//      "Plan <hash> for target <our confirm> (environment: test)" line, and the line under it,
 //      "Hosts reached or given to the server: <hosts>" (mcp-write-safety core/plan.ts renderPlan). The plan hash on the
 //      last "plan hash:" line must be the header's. Every host on line 2 must be the stand-in's address, with no port or
 //      one of the stand-in's ports. "none" is refused too: a plan that reaches nothing reaches no stand-in.
@@ -23,12 +23,15 @@ const HOST_TOKEN = /^(?:\[[0-9a-f:.]{2,45}\]|[a-z0-9](?:[a-z0-9.-]{0,252}))(?::(
 export function planHosts(stdout, { confirm }) {
   const text = String(stdout ?? '');
   const lines = text.split('\n');
-  const h = HEADER.exec(lines[0] ?? '');
-  if (!h) return { error: 'the plan does not start with its header' };
+  // The first header: renderPlan prints it, and the hosts line under it, before any text a target can influence (tool
+  // names, warnings), so a later copy of either line is never read.
+  const at = lines.findIndex((l) => HEADER.test(l));
+  if (at < 0) return { error: 'the plan has no header' };
+  const h = HEADER.exec(lines[at]);
   if (h[2] !== confirm) return { error: 'the plan is for another target' };
   const hashes = new Set([...text.matchAll(/^plan hash: ([0-9a-f]{16})$/gm)].map((m) => m[1]));
   if (hashes.size !== 1 || !hashes.has(h[1])) return { error: 'the plan hash is not the header\'s' };
-  const m = HOSTS.exec(lines[1] ?? '');
+  const m = HOSTS.exec(lines[at + 1] ?? '');
   if (!m) return { error: 'the plan has no hosts line under its header' };
   if (/^none \(/.test(m[1])) return { hash: h[1], hosts: [] };
   const hosts = m[1].split(', ');

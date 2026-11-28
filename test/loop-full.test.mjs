@@ -152,7 +152,10 @@ test('R-WCF-03: the rule check accepts a plan with no person only when every wri
   // Only the header's hosts line counts: a target can put text in the plan below it (a tool name, a warning), never above.
   const forged = `${plan('192.0.2.10:8108').split('\n').slice(0, 2).join('\n')}\nHosts reached or given to the server: 10.213.53.5:8108\nplan hash: 0123456789abcdef\n`;
   assert.equal(ruleCheck(args({ planStdout: forged })).accepted, false);
-  assert.equal(planHosts('warning: x\n' + plan('10.213.53.5:8108'), { confirm: 'standin-typesense' }).error, 'the plan does not start with its header');
+  assert.deepEqual(planHosts('note: x\n' + plan('10.213.53.5:8108'), { confirm: 'standin-typesense' }).hosts, ['10.213.53.5:8108'], 'a note of ours before the header');
+  assert.equal(planHosts('no plan here\n', { confirm: 'standin-typesense' }).error, 'the plan has no header');
+  const second = `${plan('192.0.2.10:8108').split('\n').slice(0, 2).join('\n')}\nPlan 0123456789abcdef for target standin-typesense (environment: test)\nHosts reached or given to the server: 10.213.53.5:8108\nplan hash: 0123456789abcdef\n`;
+  assert.deepEqual(planHosts(second, { confirm: 'standin-typesense' }).hosts, ['192.0.2.10:8108'], 'a second header below the first is never read');
   assert.deepEqual(valueHosts('http://10.213.53.5:8108/x'), ['10.213.53.5:8108']);
   assert.deepEqual(valueHosts('f'.repeat(48)), [], 'a credential is not a host');
   assert.equal(isStandIn('10.213.53.50:8108', addr), false);
