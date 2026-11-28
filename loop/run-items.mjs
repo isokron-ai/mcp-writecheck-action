@@ -44,7 +44,7 @@ import { FIXTURE_MANIFEST, InputError, catalogManifest, checkId, isProofLane, lo
 import { ndjson, observations, planHash, publicSummary, summarize } from './summary.mjs';
 import { dockerPlatform, extractBinaryImage } from './binary-image.mjs';
 import { entryErrorCode, itemSkips, stagesRan } from './skips.mjs';
-import { applyLaunch, exclusionFor, loadOverrides } from './overrides.mjs';
+import { applyLaunch, exclusionFor, loadOverrides, providedLaunch } from './overrides.mjs';
 import { BRIDGE_ENV_EMPTY, OCI_MAX_UNPACKED, cargoPlan, launchEnv, loadImages, loadMck, ociPullProblem, ociServer, portableBridge, resolveBeyondSeed } from './launch.mjs';
 import { BundleFiles, buildMeta, forgeryVerdict, knownBadVerdict, knownGoodVerdict, parseCollected, safeRawPath } from './bundle.mjs';
 
@@ -763,6 +763,8 @@ async function runItem(ctx, item, deadline) {
   let resolved = resolveSubject(item.subject, { seed, fixtures }, item.fixture ?? null);
   // A subject this lane records as not testable (loop/launch-overrides.json), with a stable code: never a fixture, never the server's fault.
   if (!resolved.fixture) { const ex = exclusionFor(item.subject, overrides); if (ex) resolved = ex; }
+  // A package the seed does not list but the repository publishes (loop/launch-overrides.json), when nothing else gave a launch.
+  if (resolved.skip && !resolved.fixture) { const pl = providedLaunch(item.subject, overrides); if (pl) resolved = pl; }
   const notStarted = Date.now() >= deadline;
   // WC14: no npm or PyPI package, but an OCI image or a crate in the seed: the live-probe lane's resolver, else the
   // crate (loop/launch.mjs). Not when the shard's time is spent: then the item is not started, and is sent out again.

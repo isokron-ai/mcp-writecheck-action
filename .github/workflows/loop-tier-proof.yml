@@ -38,7 +38,7 @@ jobs:
 
   proof:
     needs: conformance
-    if: needs.conformance.outputs.verdict == 'pass'
+    if: github.event.pull_request.head.repo.full_name == github.repository && needs.conformance.outputs.verdict == 'pass'
     name: loop-tier-proof-${{ matrix.shard }}
     strategy:
       fail-fast: false

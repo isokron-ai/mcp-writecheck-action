@@ -44,11 +44,11 @@
     },
     "tuananh/hyper-mcp": {
       "exclude": {
-        "reason": "policy_excluded",
-        "fault": "policy",
-        "code": "not_testable_needs_remote_plugins"
+        "reason": "no_runnable_artifact",
+        "fault": "tool",
+        "code": "needs_local_plugin_fixture"
       },
-      "why": "hyper-mcp is a host for WebAssembly plugins it pulls from an OCI registry at start; with no plugin configured it serves no tool, and the sandbox has no egress to fetch one (the 28 Nov proof: tools/list on an empty plugin list ended the session)."
+      "why": "hyper-mcp serves the tools of the WebAssembly plugins in its config, which can be local files; with an empty plugin list tools/list gave nothing (28 Nov proof). We have no plugin fixture of our own to give it yet: our gap."
     },
     "containers/kubernetes-mcp-server": {
       "launch": {
@@ -59,60 +59,65 @@
       "why": "the server refuses to start with no kubeconfig context; ours names a context whose cluster address is a loopback port nothing listens on, with a dummy token."
     },
     "apollographql/apollo-mcp-server": {
-      "exclude": {
-        "reason": "heavy_backend",
-        "fault": "policy",
-        "code": "awaiting_standin_graphql"
+      "launch": {
+        "args": [
+          "/opt/surface/loop/launch-files/apollo.yaml"
+        ],
+        "env": {
+          "APOLLO_MCP_TRANSPORT__TYPE": "stdio"
+        }
       },
-      "why": "serves GraphQL operations against a GraphQL endpoint it is configured with; two tries of ours at a config that starts it over stdio without one ended on its default HTTP listener (28 Nov proof runs 100695848, 104974739), so it waits for a GraphQL stand-in and a known-good config."
+      "why": "the image sets APOLLO_MCP_TRANSPORT__TYPE=streamable_http (and a 0.0.0.0 address) in its environment, which overrides the config file, so it bound :8000 whatever our config said (proof runs 100695848 and 104974739); the environment value here sets stdio, and the config points at a local schema file of ours with no endpoint."
     },
     "googleapis/mcp-toolbox": {
       "exclude": {
-        "reason": "heavy_backend",
-        "fault": "policy",
-        "code": "awaiting_standin_database"
+        "reason": "no_runnable_artifact",
+        "fault": "tool",
+        "code": "oci_host_not_allowed"
       },
-      "why": "a gateway to databases: every tool needs a configured data source, and its registry entry offers streamable HTTP only; the full mode's database stand-ins are not built yet."
+      "why": "its image is on us-central1-docker.pkg.dev, which is not in the OCI host allowlist this lane shares with live-probe (docker.io, ghcr.io, quay.io, public.ecr.aws, mcr.microsoft.com, registry.gitlab.com), and its registry entry offers streamable HTTP only. The image does serve stdio (`--prebuilt sqlite --stdio`, README), so adding the host to the allowlist is our change to make."
     },
     "zerodha/kite-mcp-server": {
       "exclude": {
-        "reason": "policy_excluded",
-        "fault": "policy",
-        "code": "not_testable_hosted_backend"
+        "reason": "no_runnable_artifact",
+        "fault": "tool",
+        "code": "go_install_not_supported"
       },
-      "why": "every tool calls Zerodha's hosted Kite Connect API with the user's own account; there is no local stand-in."
+      "why": "a Go server published as source only (no registry package, no image); this lane has no Go install path yet (our limit, being built). Its tools call hosted services with the user's own credentials, so a full write test also needs a mock; listing its tools does not."
     },
     "nguyenvanduocit/all-in-one-model-context-protocol": {
       "exclude": {
-        "reason": "policy_excluded",
-        "fault": "policy",
-        "code": "not_testable_hosted_backend"
+        "reason": "no_runnable_artifact",
+        "fault": "tool",
+        "code": "go_install_not_supported"
       },
-      "why": "its tools call hosted services (Jira, Confluence, GitLab, Slack and more) with the user's own tokens; there is no local stand-in."
+      "why": "a Go server published as source only (no registry package, no image); this lane has no Go install path yet (our limit, being built). Its tools call hosted services with the user's own credentials, so a full write test also needs a mock; listing its tools does not."
     },
     "roblox/studio-rust-mcp-server": {
       "exclude": {
-        "reason": "policy_excluded",
-        "fault": "policy",
-        "code": "not_testable_desktop_backend"
+        "reason": "no_runnable_artifact",
+        "fault": "tool",
+        "code": "source_only_launch_unsupported"
       },
-      "why": "an archived server that drives the Roblox Studio desktop application through a plugin; the backend is a desktop program that does not run in the sandbox."
+      "why": "an archived Rust server (publish = false) distributed as Windows and macOS release binaries and as source; this lane has no source or release-binary launch path for it. It serves stdio and lists its tools without Roblox Studio running, so tools/list is reachable once we can start it; its tools then need Studio, a desktop program."
     },
     "elastic/mcp-server-elasticsearch": {
       "exclude": {
-        "reason": "heavy_backend",
-        "fault": "policy",
-        "code": "awaiting_standin_elasticsearch"
+        "reason": "no_runnable_artifact",
+        "fault": "tool",
+        "code": "source_only_launch_unsupported"
       },
-      "why": "needs an Elasticsearch to talk to; the full mode's Elasticsearch stand-in is not built yet."
+      "why": "a deprecated Rust server distributed as an image from docker.elastic.co and AWS Marketplace (hosts outside this lane's OCI allowlist) and as source; not on crates.io. This lane has no launch path for it. Its tools also need an Elasticsearch (ES_URL), which the full mode's stand-in will supply."
     },
     "strowk/mcp-k8s-go": {
-      "exclude": {
-        "reason": "heavy_backend",
-        "fault": "policy",
-        "code": "awaiting_standin_kubernetes"
+      "launch": {
+        "kind": "npm",
+        "package": "@strowk/mcp-k8s",
+        "env": {
+          "KUBECONFIG": "/opt/surface/loop/launch-files/kubeconfig.yaml"
+        }
       },
-      "why": "needs a Kubernetes cluster; the full mode's kind stand-in is not built yet."
+      "why": "the seed lists no package, but the repository publishes @strowk/mcp-k8s on npm (a launcher of its Go binary); started with the same dummy kubeconfig as kubernetes-mcp-server."
     },
     "mark3labs/mcp-filesystem-server": {
       "exclude": {
