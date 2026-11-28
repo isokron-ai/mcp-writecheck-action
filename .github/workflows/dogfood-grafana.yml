@@ -80,9 +80,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # isokron-ai/mcp-surface-corpus main at 78a7834, the commit its nightly conformance tests (as corpus.yml). The
+  # isokron-ai/mcp-surface-corpus main at 3738f2c, the commit its nightly conformance tests (as corpus.yml). The
   # conformance job and the sandbox-guard step name this same commit (test/dogfood-sandbox.test.mjs checks).
-  SANDBOX_REF: '78a7834cf028507b03e90e266b87bebeacfccd51'
+  SANDBOX_REF: '3738f2c3dabe03e943a1e5ff0a2441aca831e910'
   PLAN_HASHES: ${{ inputs.plan-hashes }}
   # isokron-ai/mcp-grafana, branch iso/write-path.
   FORK_REF: e551ab8bdbb2fe0daf3eb714ef6fbc03ad859ee0
@@ -138,7 +138,7 @@ jobs:
     if: needs.t0-start.outputs.go == 'true'
     permissions:
       contents: read
-    uses: isokron-ai/mcp-surface-corpus/.github/workflows/sandbox-conformance.yml@78a7834cf028507b03e90e266b87bebeacfccd51 # SANDBOX_REF
+    uses: isokron-ai/mcp-surface-corpus/.github/workflows/sandbox-conformance.yml@3738f2c3dabe03e943a1e5ff0a2441aca831e910 # SANDBOX_REF
     with:
       mutations: false
       artifact-prefix: dogfood-grafana-conformance
@@ -188,7 +188,7 @@ jobs:
       # gVisor, the firewall and the hostile self test on this very runner, before any third-party code runs.
       - id: sandbox
         name: Sandbox guard (gVisor, firewall, self test)
-        uses: isokron-ai/mcp-surface-corpus/sandbox-guard@78a7834cf028507b03e90e266b87bebeacfccd51 # SANDBOX_REF
+        uses: isokron-ai/mcp-surface-corpus/sandbox-guard@3738f2c3dabe03e943a1e5ff0a2441aca831e910 # SANDBOX_REF
       - name: The guard ran the pinned sandbox and passed
         env:
           VERDICT: ${{ steps.sandbox.outputs.verdict }}
@@ -312,7 +312,7 @@ jobs:
       # gVisor, the firewall and the hostile self test on this very runner, before any third-party code runs.
       - id: sandbox
         name: Sandbox guard (gVisor, firewall, self test)
-        uses: isokron-ai/mcp-surface-corpus/sandbox-guard@78a7834cf028507b03e90e266b87bebeacfccd51 # SANDBOX_REF
+        uses: isokron-ai/mcp-surface-corpus/sandbox-guard@3738f2c3dabe03e943a1e5ff0a2441aca831e910 # SANDBOX_REF
       - name: The guard ran the pinned sandbox and passed
         env:
           VERDICT: ${{ steps.sandbox.outputs.verdict }}

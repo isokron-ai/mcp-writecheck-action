@@ -24,7 +24,7 @@ it (`plan-hashes`, `job=hash` pairs).
 
 Since 28 Nov 2026 the dogfood workers that run third-party code (kronicle-lite, sea-lite, writesafe, grafana and
 payload) run every install, build and run of it inside the sandbox of `isokron-ai/mcp-surface-corpus` at the commit
-`SANDBOX_REF` names (78a7834), the one the writecheck lane (`corpus.yml`) uses: gVisor, user 65534, every capability
+`SANDBOX_REF` names (3738f2c), the one the writecheck lane (`corpus.yml`) uses: gVisor, user 65534, every capability
 dropped, a read-only root, the sandbox's resource limits and no runner environment. Each work job needs the reusable
 `sandbox-conformance` job, then runs the `sandbox-guard` action on its own runner, both at `SANDBOX_REF`, before
 `dogfood/sbx.mjs up`. The driver:
