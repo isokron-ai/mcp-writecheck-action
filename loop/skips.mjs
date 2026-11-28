@@ -150,7 +150,7 @@ export function stagesRan(steps = []) {
  * The CLI's own refusal to draft a manifest (init exits 4: "no pair of read and update tools found in tools/list; write the
  * manifest by hand"). init only drafts a manifest for a person; this lane's catalog manifest is its own and the plan and
  * catalog stages do not read the draft. A server that answered tools/list and has no read/update pair (a search tool, an
- * echo server) is not a server that failed to start: when plan and catalog ran, the refusal is no skip (R-WC-42).
+ * echo server) is not a server that failed to start: the refusal is never a skip, and never a start failure (R-WC-42).
  */
 export const INIT_DECLINED = /^error: init: no pair of read and update tools found in tools\/list/m;
 
@@ -242,7 +242,8 @@ export function itemSkips({ resolved, notStarted = false, res = null, unit = {},
     const failed = {};
     for (const st of ['init', 'plan', 'catalog']) {
       if (stages[st] || (st === 'init' && unit.init === false)) continue;
-      if (st === 'init' && stages.plan && stages.catalog && INIT_DECLINED.test(String(initLog))) { notes.init_detail = 'init_declined: the CLI found no read and update pair to draft a manifest from; plan and catalog ran'; continue; }
+      // R-WC-42: the CLI answered: it reached the server, read tools/list and has nothing to draft. That is never a start failure (never timeout_start), whether or not plan and catalog ran; if they did not, they carry their own skips.
+      if (st === 'init' && INIT_DECLINED.test(String(initLog))) { notes.init_code = 'no_read_update_pair'; notes.init_detail = 'init_declined: the CLI read tools/list and found no read and update pair to draft a manifest from'; continue; }
       const step = [...(res.steps ?? [])].reverse().find((x) => x?.step === st) ?? null;
       const f = stageFailure(step, serverLog);
       add(st, f.reason, f.fault);

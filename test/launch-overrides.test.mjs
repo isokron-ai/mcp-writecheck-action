@@ -21,7 +21,7 @@ const INIT_LOG = 'error: init: no pair of read and update tools found in tools/l
 const OK = [{ step: 'init', exit: 4 }, { step: 'plan', exit: 0 }, { step: 'catalog', exit: 0 }];
 const run = (steps, initLog, unit = { init: true, full: null }) => itemSkips({ resolved: {}, res: { error: null, install: { ok: true }, steps, fullRan: false }, unit, stages: { install: true, ...stagesRan(steps) }, initLog });
 
-test('R-WC-42: init that declined to draft a manifest, with plan and catalog run, is no skip; any other init failure stays ours', () => {
+test('R-WC-42: init that declined to draft a manifest is never a start failure; any other init failure stays ours', () => {
   assert.match(INIT_LOG, INIT_DECLINED);
   // terraform-mcp-server, the everything server, kronicle-lite (28 Nov): plan and catalog ran, init declined.
   const declined = run(OK, INIT_LOG);
@@ -36,9 +36,17 @@ test('R-WC-42: init that declined to draft a manifest, with plan and catalog run
   // Mutation: any other init output (the server never started) is still a skip of ours.
   assert.equal(run(OK, 'error: server INIT did not initialize: timed out\n').skips[0].fault, 'tool');
   assert.equal(run(OK, '').skips[0].stage, 'init');
-  // Mutation: the refusal does not excuse a plan or catalog that did not run.
+  // The refusal is never a start failure (tool-qa#131, the lead mcp-writecheck-action#83: a server that started and listed its tools in 0.3 s was recorded timeout_start):
+  // not as init's own skip, with or without plan and catalog, and its code is kept in the driver notes.
+  assert.equal(declined.notes.init_code, 'no_read_update_pair');
+  for (const steps of [OK, [{ step: 'init', exit: 4 }, { step: 'plan', exit: 4 }, { step: 'catalog', exit: 4 }]]) {
+    const r = run(steps, INIT_LOG);
+    assert.ok(!r.skips.some((x) => x.stage === 'init'), 'init has no skip');
+    assert.ok(!r.skips.some((x) => x.stage === 'init' && x.reason === 'timeout_start'));
+  }
+  // Mutation: the refusal does not excuse a plan or catalog that did not run: those keep their own skips.
   const noCatalog = run([{ step: 'init', exit: 4 }, { step: 'plan', exit: 0 }, { step: 'catalog', exit: 4 }], INIT_LOG);
-  assert.deepEqual(noCatalog.skips.map((x) => x.stage), ['init', 'catalog', 'full']);
+  assert.deepEqual(noCatalog.skips.map((x) => x.stage), ['catalog', 'full']);
   // Mutation: the sentence must start the line (a server cannot print it inside its own text to hide a failed start).
   assert.equal(run(OK, `the server said: ${INIT_LOG}`).skips[0].stage, 'init');
 });
