@@ -47,9 +47,9 @@ jobs:
     name: mutation probes
     permissions:
       contents: read
-    uses: isokron-ai/tool-qa/.github/workflows/mutation-probe.yml@03e91c569a568e69170f59f7da0636925baf6683
+    uses: isokron-ai/tool-qa/.github/workflows/mutation-probe.yml@c65a9d28d5356f866f8fce269924520640424075
     with:
-      probe-ref: 03e91c569a568e69170f59f7da0636925baf6683
+      probe-ref: c65a9d28d5356f866f8fce269924520640424075
       ref: ${{ inputs.ref }}
       mutations: ${{ inputs.mutations }}
       probe-files: ${{ inputs.probe-files }}
