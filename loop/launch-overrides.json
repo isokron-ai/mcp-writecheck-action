@@ -43,13 +43,12 @@
       "why": "the image starts the SSE transport on port 8000 unless told `-t stdio`."
     },
     "tuananh/hyper-mcp": {
-      "launch": {
-        "args": [
-          "--config-file",
-          "/opt/surface/loop/launch-files/hyper-mcp.json"
-        ]
+      "exclude": {
+        "reason": "policy_excluded",
+        "fault": "policy",
+        "code": "not_testable_needs_remote_plugins"
       },
-      "why": "hyper-mcp refuses to start without a config file; ours lists no plugins."
+      "why": "hyper-mcp is a host for WebAssembly plugins it pulls from an OCI registry at start; with no plugin configured it serves no tool, and the sandbox has no egress to fetch one (the 28 Nov proof: tools/list on an empty plugin list ended the session)."
     },
     "containers/kubernetes-mcp-server": {
       "launch": {
