@@ -1,0 +1,6 @@
+{
+  "name": "mcp-writecheck-sandboxed",
+  "private": true,
+  "type": "module",
+  "description": "The dogfood workers' cli-path: the pinned mcp-writecheck CLI, run inside the job's sandbox by dogfood/sbx.mjs."
+}

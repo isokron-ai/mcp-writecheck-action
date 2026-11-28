@@ -1,34 +1,36 @@
 #!/usr/bin/env bash
 # The writesafe test app for one CI job: Strapi 5 with the plugin installed from its packed tarball, on
-# SQLite, on 127.0.0.1:4812. Every credential is generated here, masked, and never printed.
+# SQLite. Every step runs inside the job's sandbox (dogfood/sbx.mjs; .github/workflows/dogfood-writesafe.yml):
+# Strapi is a service of the sandbox's run network at 10.213.53.5:4812, which the unit (where these steps, the CLI
+# and the plugin's own token script run) reaches as 127.0.0.1:4812. Every credential is generated in the
+# sandbox, for a Strapi that nothing outside it can reach, and is never printed.
 #
-#   dogfood/writesafe/strapi.sh prepare   build the app from ws/ (the checked-out plugin repository)
-#   dogfood/writesafe/strapi.sh start     write .env, start Strapi, register the first admin, make the
-#                                          tokens (exported masked through GITHUB_ENV), seed test data
-#   dogfood/writesafe/strapi.sh stop
+#   dogfood/writesafe/strapi.sh prepare   build the app from ws/ (the checked-out plugin repository); a sandbox build step
+#   dogfood/writesafe/strapi.sh env       write the app's .env and the first admin's credentials
+#   (the workflow then starts Strapi as the sandbox service `strapi`, in the app folder)
+#   dogfood/writesafe/strapi.sh seed      wait for Strapi, register the first admin, make the tokens (WS_MCP_TOKEN and
+#                                          WS_REST_TOKEN, through the sandbox's own GITHUB_ENV), seed test data
 #
-# Env: STRAPI_VERSION (default 5.62.0), RUNNER_TEMP, GITHUB_ENV.
+# Env: STRAPI_VERSION (default 5.62.0), RUNNER_TEMP, GITHUB_ENV (inside the sandbox: loop/sandbox/dogfood-in.mjs).
 set -euo pipefail
 WS=${WS_DIR:-$PWD/ws}
 APP=${RUNNER_TEMP:?}/ws-app
 SECRETS=$RUNNER_TEMP/ws-secrets
 PORT=4812
 BASE=http://127.0.0.1:$PORT
-LOG=$RUNNER_TEMP/ws-strapi.log
-PIDFILE=$RUNNER_TEMP/ws-strapi.pid
 
 rnd() { node -e 'process.stdout.write(require("crypto").randomBytes(+process.argv[1]).toString("base64url"))' "$1"; }
 
-case "${1:?prepare, start or stop}" in
+case "${1:?prepare, env or seed}" in
   prepare)
     "$WS/ci/prepare_app.sh" "${STRAPI_VERSION:-5.62.0}" "$APP"
     ;;
 
-  start)
+  env)
     mkdir -p "$SECRETS"; chmod 700 "$SECRETS"
     umask 077
     {
-      echo "HOST=127.0.0.1"
+      echo "HOST=0.0.0.0"
       echo "PORT=$PORT"
       echo "APP_KEYS=$(rnd 24),$(rnd 24),$(rnd 24),$(rnd 24)"
       echo "API_TOKEN_SALT=$(rnd 24)"
@@ -39,25 +41,26 @@ case "${1:?prepare, start or stop}" in
       echo "STRAPI_TELEMETRY_DISABLED=true"
       echo "DO_NOT_TRACK=1"
       echo "DATABASE_CLIENT=sqlite"
-      # The documented defaults (builtinUpdates guard, allowForce off), with the optional modules on.
       echo "WRITESAFE_MODULES=create,delete,bulk,replace,copy,localize"
     } > "$APP/.env"
     node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ email: "ci-admin@example.test", password: "Ci9" + require("crypto").randomBytes(18).toString("base64url") }), { mode: 0o600 })' "$SECRETS/admin.json"
     umask 022
     rm -rf "$APP/.tmp"
-    : > "$LOG"
-    ( cd "$APP" && HOST=127.0.0.1 PORT=$PORT STRAPI_TELEMETRY_DISABLED=true DO_NOT_TRACK=1 SERVE_ADMIN_PANEL=false NODE_ENV=test \
-        nohup node --max-old-space-size=6144 node_modules/@strapi/strapi/bin/strapi.js start >> "$LOG" 2>&1 & echo $! > "$PIDFILE" )
-    for _ in $(seq 1 180); do
-      curl -s -o /dev/null -w '%{http_code}' "$BASE/_health" 2>/dev/null | grep -q 204 && break
-      kill -0 "$(cat "$PIDFILE")" 2>/dev/null || { echo "::error::Strapi exited during start"; tail -40 "$LOG"; exit 1; }
-      sleep 1
-    done
-    curl -s -o /dev/null -w '%{http_code}' "$BASE/_health" | grep -q 204 || { echo "::error::Strapi not healthy after 180 s"; tail -40 "$LOG"; exit 1; }
-    echo "Strapi is up on $PORT"
+    echo "wrote the app's .env and the admin credentials"
+    ;;
 
-    # The first admin (registration endpoint), then the plugin repository's own token script: two tokens
-    # for the MCP endpoint and two full-access REST tokens, written to a mode-600 file.
+  seed)
+    node -e '
+      const base = process.argv[1];
+      (async () => {
+        for (let i = 0; i < 180; i++) {
+          try { const r = await fetch(base + "/_health"); if (r.status === 204) { console.log("Strapi is up"); return; } } catch {}
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+        console.error("Strapi not healthy after 180 s"); process.exit(1);
+      })();
+    ' "$BASE"
+
     export SPIKE_BASE=$BASE SPIKE_ADMIN=$SECRETS/admin.json SPIKE_TOKENS=$SECRETS/tokens.json
     node -e '
       const a = JSON.parse(require("fs").readFileSync(process.env.SPIKE_ADMIN, "utf8"));
@@ -66,18 +69,15 @@ case "${1:?prepare, start or stop}" in
         .then(async (r) => { if (!r.ok) { console.error("register-admin", r.status); process.exit(1); } console.log("admin registered"); });
     '
     node "$WS/scripts/setup_tokens.mjs" > /dev/null
-    # Mask before anything can print them, then hand them to later steps.
     node -e '
       const t = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
       const fs = require("fs");
       const all = [t.admin["agent-a"], t.admin["agent-b"], t.rest["rest-a"], t.rest["rest-b"]];
-      // Values from the server: refuse anything that is not a plain token (a newline would inject into GITHUB_ENV).
+      // Values from the server: refuse anything that is not a plain token (a newline would inject into the env file).
       if (!all.every((v) => typeof v === "string" && /^[A-Za-z0-9._~+\/=-]+$/.test(v))) { console.error("a token has an unexpected form"); process.exit(1); }
-      for (const v of all) console.log("::add-mask::" + v);
       fs.appendFileSync(process.env.GITHUB_ENV, "WS_MCP_TOKEN=" + t.admin["agent-a"] + "\nWS_REST_TOKEN=" + t.rest["rest-a"] + "\n");
+      console.log("tokens made");
     ' "$SECRETS/tokens.json"
-
-    # Test data the tester did not create: the guard page and bystanders (pages and one article).
     node - "$SECRETS/tokens.json" <<'EOF'
 const fs = require('fs');
 const rest = JSON.parse(fs.readFileSync(process.argv[2], 'utf8')).rest['rest-a'];
@@ -95,8 +95,4 @@ async function post(path, data) {
 EOF
     ;;
 
-  stop)
-    if [ -f "$PIDFILE" ]; then kill "$(cat "$PIDFILE")" 2>/dev/null || true; fi
-    rm -rf "$SECRETS"
-    ;;
 esac
