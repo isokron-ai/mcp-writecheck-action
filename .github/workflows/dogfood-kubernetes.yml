@@ -1,5 +1,12 @@
-# T0 worker: dispatch only (no schedule, push or pull_request). Comments below that say nightly or automatic
-# describe the earlier setup; see the README section "T0 workers".
+# NOT a T0 worker any more, and NOT in the t0-dogfood lane: it builds no result bundle (no t0-manifest job, no
+# worker-kit) and must not be dispatched by the pump. Dispatch only, by hand. Why: kind runs the cluster in privileged
+# Docker containers on the runner, which isokron-ai/mcp-surface-corpus's sandbox (gVisor, every capability dropped, a
+# run network with no way out) cannot give, and the server under test has to reach the cluster's API. So the server,
+# the experiment's build and kind's node image run on the plain runner, outside the sandbox. Any job of a run can
+# upload an artifact with the run's own Actions token, so a run that executes third-party code outside the sandbox
+# must not be the run whose sealed bundle tool-qa ingests: a forged result-<attempt>-0.tar.age (age encrypts to a
+# public key) would be indistinguishable. The sandboxed dogfood workers are dogfood-kronicle-lite, -sea-lite,
+# -writesafe, -grafana and -payload (test/dogfood-sandbox.test.mjs).
 #
 # Dogfood: this action against the Kubernetes MCP server research build, every night and on demand.
 #
@@ -294,32 +301,3 @@ jobs:
           plan-hash: ${{ env.ACCEPTED_PLAN_HASH }}
           artifact-name: kubernetes-vendor-full
           cli-path: ${{ env.MWSC_CLI_PATH }}
-
-  t0-manifest:
-    needs: [t0-start, research, vendor]
-    if: ${{ always() && needs.t0-start.outputs.go == 'true' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    # Runs none of the workflow's code: it only reads the jobs' results (and, for a failed run, which steps failed) and builds the sealed bundle.
-    permissions:
-      contents: read
-      actions: read # the failed steps of this run, to tell infrastructure from our tool
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Build the result bundle
-        env:
-          NEEDS: ${{ toJSON(needs) }}
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          mkdir -p "$RUNNER_TEMP/out"
-          node loop/t0-bundle.mjs --out "$RUNNER_TEMP/out"
-      - uses: isokron-ai/tool-qa/worker-kit@b04b7c65c244de48c32f93c7ea9b9ac933ca1efe # tool-qa main, 27 Nov 2026 (T0_WORKER_KIT_REF)
-        with:
-          bundle-dir: ${{ runner.temp }}/out/bundle
-          meta-file: ${{ runner.temp }}/out/meta.json
-          attempt-id: ${{ needs.t0-start.outputs.attempt_id }}
-          item-index: 0
-          fence: ${{ needs.t0-start.outputs.fence }}
-          run-key: ${{ needs.t0-start.outputs.run_key }}

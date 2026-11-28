@@ -14,8 +14,16 @@
 # Security: no pull_request_target; nightly schedule and dispatch only (see `on:`). No secret is used:
 # isokron-ai/mcp-write-safety is public, so the checkout of the CLI needs no token; the action gets the
 # built CLI through cli-path.
-# Every Strapi credential is generated in the job and masked.
-# Third-party actions are pinned by full SHA. Strapi listens on 127.0.0.1 only.
+# Third-party actions are pinned by full SHA.
+#
+# The sandbox: the app's install and build, Strapi itself, the seeding (with the plugin's own token script) and the CLI
+# run inside isokron-ai/mcp-surface-corpus's sandbox at SANDBOX_REF, the one the writecheck lane (corpus.yml) uses,
+# through dogfood/sbx.mjs: gVisor, user 65534, no capability, a read-only root, no runner environment; the install
+# reaches registry.npmjs.org only, through the allowlist proxy, and the run has no network out at all. Strapi is a
+# service at 10.213.53.5 of the run network, reached from the unit (the CLI's container) as 127.0.0.1:4812, as the
+# manifest says. Every Strapi credential is made inside the sandbox, for a Strapi nothing outside it can reach. The
+# reusable sandbox-conformance job and, on each job's own runner, the sandbox-guard action pass first, both at
+# SANDBOX_REF. The sealed bundle is built by t0-manifest, another job that runs none of this code.
 
 name: "dogfood: writesafe"
 
@@ -50,6 +58,15 @@ on:
         required: false
         default: ''
 
+  # The pull-request proof (dogfood-sandbox-proof.yml) calls this same file: proof true builds the bundle in a dry run
+  # (no encryption, no upload). The dispatch inputs it does not pass are empty, so the pinned defaults run.
+  workflow_call:
+    inputs:
+      shard_id: { type: string, required: true }
+      attempt_id: { type: string, required: true }
+      fence: { type: string, required: true }
+      run_key: { type: string, required: true }
+      proof: { type: boolean, required: false, default: false }
 permissions: {}
 
 concurrency:
@@ -57,6 +74,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  # isokron-ai/mcp-surface-corpus main at 78a7834, the commit its nightly conformance tests (as corpus.yml). The
+  # conformance job and the sandbox-guard step name this same commit (test/dogfood-sandbox.test.mjs checks).
+  SANDBOX_REF: '78a7834cf028507b03e90e266b87bebeacfccd51'
   # isokron-ai/strapi-plugin-writesafe main 7120917 (16 Nov: the public sync of source db70c56, which adds #45, #46 and
   # #48, the schema cache and descriptions, to the self-test fixes and X4).
   WS_REF: 71209177a83a0114d5cfa55c89221b9ca1ebec63
@@ -107,14 +127,26 @@ jobs:
             echo "run_key=$IN_RUN_KEY"
           } >> "$GITHUB_OUTPUT"
 
-  plan:
+  # The sandbox proven on today's runner image before any job that runs third-party code starts.
+  conformance:
     needs: t0-start
     if: needs.t0-start.outputs.go == 'true'
+    permissions:
+      contents: read
+    uses: isokron-ai/mcp-surface-corpus/.github/workflows/sandbox-conformance.yml@78a7834cf028507b03e90e266b87bebeacfccd51 # SANDBOX_REF
+    with:
+      mutations: false
+      artifact-prefix: dogfood-writesafe-conformance
+
+  plan:
+    needs: [t0-start, conformance]
+    if: needs.t0-start.outputs.go == 'true' && needs.conformance.outputs.verdict == 'pass'
     permissions:
       contents: read
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
+      MSC_DIR: msc
       PLAN_HASH: ffe01fe92802bad1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -139,6 +171,8 @@ jobs:
           persist-credentials: false
       - name: Build mcp-writecheck
         run: dogfood/build-cli.sh
+      - name: Fetch the sandbox (SANDBOX_REF)
+        run: loop/prepare.sh sandbox
       - name: Check out writesafe
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -146,10 +180,31 @@ jobs:
           ref: ${{ env.WS_REF }}
           path: ws
           persist-credentials: false
-      - name: Build the test app
-        run: dogfood/writesafe/strapi.sh prepare
-      - name: Start Strapi and seed test data
-        run: dogfood/writesafe/strapi.sh start
+      # gVisor, the firewall and the hostile self test on this very runner, before any third-party code runs.
+      - id: sandbox
+        name: Sandbox guard (gVisor, firewall, self test)
+        uses: isokron-ai/mcp-surface-corpus/sandbox-guard@78a7834cf028507b03e90e266b87bebeacfccd51 # SANDBOX_REF
+      - name: The guard ran the pinned sandbox and passed
+        env:
+          VERDICT: ${{ steps.sandbox.outputs.verdict }}
+          GUARD_SHA: ${{ steps.sandbox.outputs.sandbox-sha }}
+        run: dogfood/sandbox-guarded.sh
+      - name: Sandbox up (the workspace mirrored into it; 127.0.0.1:4812 is Strapi at .5)
+        run: node dogfood/sbx.mjs up --fwd 4812=5:4812
+      # The app's npm install runs its packages' install scripts (better-sqlite3 compiles from source against the
+      # build image's own Node headers: its prebuilt download is not on the allowlist). registry.npmjs.org only.
+      - name: Build the test app (in the sandbox)
+        run: node dogfood/sbx.mjs build --image node22-build --hosts registry.npmjs.org --cwd . --minutes 25 --env STRAPI_VERSION="$STRAPI_VERSION" -- dogfood/writesafe/strapi.sh prepare
+      - name: The app's configuration and the first admin's credentials (in the sandbox)
+        run: node dogfood/sbx.mjs exec -- dogfood/writesafe/strapi.sh env
+      - name: Start Strapi (a service of the sandbox's run network)
+        run: >-
+          node dogfood/sbx.mjs svc --name strapi --ip 5 --image node22 --cwd "$RUNNER_TEMP/ws-app" --wrap
+          --env HOST=0.0.0.0 --env PORT=4812 --env NODE_ENV=test --env SERVE_ADMIN_PANEL=false
+          --env STRAPI_TELEMETRY_DISABLED=true --env DO_NOT_TRACK=1
+          -- node --max-old-space-size=1792 node_modules/@strapi/strapi/bin/strapi.js start
+      - name: Seed test data and make the tokens (in the sandbox)
+        run: node dogfood/sbx.mjs exec -- dogfood/writesafe/strapi.sh seed
       - id: plan
         name: Plan
         uses: ./
@@ -157,26 +212,33 @@ jobs:
           manifest: dogfood/writesafe/writecheck.yaml
           mode: plan
           artifact-name: writesafe-plan
-          cli-path: ${{ env.MWSC_CLI_PATH }}
+          cli-path: dogfood/sbx-cli
       - name: Compare the plan hash with the accepted one
         env:
           SEEN: ${{ steps.plan.outputs.plan-hash }}
         run: dogfood/check-plan-hash.sh "$PLAN_HASH" "$SEEN" plan
-      - name: Stop Strapi
+      - name: Strapi's log, when a step failed
+        if: failure()
+        run: node dogfood/sbx.mjs logs strapi 120
+      - name: End the sandbox
         if: always()
-        run: dogfood/writesafe/strapi.sh stop
+        run: node dogfood/sbx.mjs down
+      - name: Stop Docker, and check nothing of the sandbox is left
+        if: always()
+        run: loop/teardown.sh
 
   # Full mode against the plugin at WS_REF, whose self-test fixes are merged and synced. Everything it
   # writes goes to the job's own throwaway Strapi (SQLite in the runner, test data only). PLAN_HASH is the
   # full job's plan, read before it was pinned.
   full:
-    needs: t0-start
-    if: needs.t0-start.outputs.go == 'true'
+    needs: [t0-start, conformance]
+    if: needs.t0-start.outputs.go == 'true' && needs.conformance.outputs.verdict == 'pass'
     permissions:
       contents: read
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
+      MSC_DIR: msc
       PLAN_HASH: ffe01fe92802bad1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -201,6 +263,8 @@ jobs:
           persist-credentials: false
       - name: Build mcp-writecheck
         run: dogfood/build-cli.sh
+      - name: Fetch the sandbox (SANDBOX_REF)
+        run: loop/prepare.sh sandbox
       - name: Check out writesafe
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -208,10 +272,31 @@ jobs:
           ref: ${{ env.WS_REF }}
           path: ws
           persist-credentials: false
-      - name: Build the test app
-        run: dogfood/writesafe/strapi.sh prepare
-      - name: Start Strapi and seed test data
-        run: dogfood/writesafe/strapi.sh start
+      # gVisor, the firewall and the hostile self test on this very runner, before any third-party code runs.
+      - id: sandbox
+        name: Sandbox guard (gVisor, firewall, self test)
+        uses: isokron-ai/mcp-surface-corpus/sandbox-guard@78a7834cf028507b03e90e266b87bebeacfccd51 # SANDBOX_REF
+      - name: The guard ran the pinned sandbox and passed
+        env:
+          VERDICT: ${{ steps.sandbox.outputs.verdict }}
+          GUARD_SHA: ${{ steps.sandbox.outputs.sandbox-sha }}
+        run: dogfood/sandbox-guarded.sh
+      - name: Sandbox up (the workspace mirrored into it; 127.0.0.1:4812 is Strapi at .5)
+        run: node dogfood/sbx.mjs up --fwd 4812=5:4812
+      # The app's npm install runs its packages' install scripts (better-sqlite3 compiles from source against the
+      # build image's own Node headers: its prebuilt download is not on the allowlist). registry.npmjs.org only.
+      - name: Build the test app (in the sandbox)
+        run: node dogfood/sbx.mjs build --image node22-build --hosts registry.npmjs.org --cwd . --minutes 25 --env STRAPI_VERSION="$STRAPI_VERSION" -- dogfood/writesafe/strapi.sh prepare
+      - name: The app's configuration and the first admin's credentials (in the sandbox)
+        run: node dogfood/sbx.mjs exec -- dogfood/writesafe/strapi.sh env
+      - name: Start Strapi (a service of the sandbox's run network)
+        run: >-
+          node dogfood/sbx.mjs svc --name strapi --ip 5 --image node22 --cwd "$RUNNER_TEMP/ws-app" --wrap
+          --env HOST=0.0.0.0 --env PORT=4812 --env NODE_ENV=test --env SERVE_ADMIN_PANEL=false
+          --env STRAPI_TELEMETRY_DISABLED=true --env DO_NOT_TRACK=1
+          -- node --max-old-space-size=1792 node_modules/@strapi/strapi/bin/strapi.js start
+      - name: Seed test data and make the tokens (in the sandbox)
+        run: node dogfood/sbx.mjs exec -- dogfood/writesafe/strapi.sh seed
       - id: plan
         name: Plan
         uses: ./
@@ -219,7 +304,7 @@ jobs:
           manifest: dogfood/writesafe/writecheck.yaml
           mode: plan
           artifact-name: writesafe-full-plan
-          cli-path: ${{ env.MWSC_CLI_PATH }}
+          cli-path: dogfood/sbx-cli
       - name: Compare the plan hash with the accepted one
         env:
           SEEN: ${{ steps.plan.outputs.plan-hash }}
@@ -231,7 +316,7 @@ jobs:
           mode: catalog
           fail-on: must
           artifact-name: writesafe-catalog
-          cli-path: ${{ env.MWSC_CLI_PATH }}
+          cli-path: dogfood/sbx-cli
       - name: Full run
         uses: ./
         with:
@@ -241,13 +326,19 @@ jobs:
           confirm-target: writesafe-dogfood-strapi-5.62.0
           plan-hash: ${{ env.ACCEPTED_PLAN_HASH }}
           artifact-name: writesafe-full
-          cli-path: ${{ env.MWSC_CLI_PATH }}
-      - name: Stop Strapi
+          cli-path: dogfood/sbx-cli
+      - name: Strapi's log, when a step failed
+        if: failure()
+        run: node dogfood/sbx.mjs logs strapi 120
+      - name: End the sandbox
         if: always()
-        run: dogfood/writesafe/strapi.sh stop
+        run: node dogfood/sbx.mjs down
+      - name: Stop Docker, and check nothing of the sandbox is left
+        if: always()
+        run: loop/teardown.sh
 
   t0-manifest:
-    needs: [t0-start, plan, full]
+    needs: [t0-start, conformance, plan, full]
     if: ${{ always() && needs.t0-start.outputs.go == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -274,3 +365,4 @@ jobs:
           item-index: 0
           fence: ${{ needs.t0-start.outputs.fence }}
           run-key: ${{ needs.t0-start.outputs.run_key }}
+          dry-run: ${{ inputs.proof && 'true' || 'false' }}

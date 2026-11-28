@@ -1,20 +1,29 @@
 #!/usr/bin/env bash
-# The experiment's sandbox app for one CI job (the experiment repository is checked out at ./exp).
+# The experiment's sandbox app for one CI job (the experiment repository is checked out at ./exp). Every mode runs
+# inside the job's sandbox (dogfood/sbx.mjs, .github/workflows/dogfood-payload.yml): Postgres is the sandbox service
+# `pg` at 10.213.53.6:5432 and the app (`next dev`) the service `app` at 10.213.53.5:4960, which the unit (where these
+# modes, the seeding and the CLI run) reaches as 127.0.0.1:4960.
 #   dogfood/payload/stack.sh build research|vendor   pnpm install; research: harness/build/build.sh app research-v2-1
-#   dogfood/payload/stack.sh start research|vendor   writes the app's .env (random PAYLOAD_SECRET), starts `next dev`
-#                                                    on 127.0.0.1:4960 and waits until /api answers
-#   dogfood/payload/stack.sh shim                    starts dogfood/payload/shim.mjs on 127.0.0.1:4961 in front of the app
-#   dogfood/payload/stack.sh pg                      starts Postgres (pinned image) on 127.0.0.1:4900 with a password made
-#                                                    here; exports DATABASE_URL (masked) through GITHUB_ENV
-#   dogfood/payload/stack.sh stop
-# Nothing secret is printed.
+#                                                    (a sandbox build step: registry.npmjs.org only, pnpm on PATH)
+#   dogfood/payload/stack.sh pg                      waits for Postgres; DATABASE_URL (the password is the file the
+#                                                    service was started with) goes to the sandbox's own GITHUB_ENV
+#   dogfood/payload/stack.sh env research|vendor     writes the app's .env (DATABASE_URL, a random PAYLOAD_SECRET)
+#   (the workflow then starts the app as the sandbox service `app`, in the app's folder)
+#   dogfood/payload/stack.sh wait                    waits until the app's /api answers (next dev compiles on demand)
+#   dogfood/payload/stack.sh shim-wait               waits for dogfood/payload/shim.mjs on 127.0.0.1:4961
+# Nothing secret is printed. Env: RUNNER_TEMP, GITHUB_ENV (inside the sandbox: loop/sandbox/dogfood-in.mjs).
 set -euo pipefail
 EXP=$PWD/exp/harness
 PORT=4960
-LOG=${RUNNER_TEMP:-/tmp}/payload-next.log
-PIDFILE=${RUNNER_TEMP:-/tmp}/payload-next.pid
 appdir() { case "$1" in research) echo "$EXP/build/app-research-v2-1" ;; vendor) echo "$EXP/app" ;; *) echo "research or vendor" >&2; exit 2 ;; esac; }
-case "${1:?build, start or stop}" in
+tcp_wait() { # host port seconds
+  node -e '
+    const net = require("net"); const [h, p, s] = process.argv.slice(1);
+    const until = Date.now() + Number(s) * 1000;
+    (function go() { const c = net.connect(Number(p), h, () => { c.end(); process.exit(0); }); c.on("error", () => { if (Date.now() > until) process.exit(1); setTimeout(go, 500); }); })();
+  ' "$1" "$2" "$3"
+}
+case "${1:?build, pg, env, wait or shim-wait}" in
   build)
     (cd "$EXP/app" && pnpm install --frozen-lockfile)
     if [ "$2" = research ]; then
@@ -22,50 +31,34 @@ case "${1:?build, start or stop}" in
       "$EXP/build/build.sh" app research-v2-1
     fi
     ;;
-  start)
+  pg)
+    pw=$(cat "$RUNNER_TEMP/pg-secrets/pw")
+    [[ $pw =~ ^[0-9a-f]{36}$ ]] || { echo "::error::the Postgres password file is not one the driver made"; exit 1; }
+    tcp_wait 10.213.53.6 5432 90 || { echo "Postgres did not become ready"; exit 1; }
+    echo "DATABASE_URL=postgresql://payload:$pw@10.213.53.6:5432/payload" >> "$GITHUB_ENV"
+    echo "Postgres up at 10.213.53.6:5432"
+    ;;
+  env)
     APP=$(appdir "$2")
-    secret=$(openssl rand -hex 24)
-    echo "::add-mask::$secret"
+    secret=$(node -p 'require("crypto").randomBytes(24).toString("hex")')
     umask 077
     printf 'DATABASE_URL=%s\nPAYLOAD_SECRET=%s\n' "${DATABASE_URL:?DATABASE_URL}" "$secret" > "$APP/.env"
-    umask 022
-    cd "$APP"
-    NEXT_TELEMETRY_DISABLED=1 NODE_OPTIONS=--no-deprecation nohup node_modules/.bin/next dev -H 127.0.0.1 -p "$PORT" > "$LOG" 2>&1 &
-    echo $! > "$PIDFILE"
-    # next dev compiles the /api route on the first request and pushes the schema to Postgres
-    for _ in $(seq 1 180); do
-      code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/api/users/init" || true)
-      [ "$code" = 200 ] && { echo "app up: $(curl -s "http://127.0.0.1:$PORT/api/users/init")"; exit 0; }
-      kill -0 "$(cat "$PIDFILE")" 2>/dev/null || { echo "::error::next dev exited"; tail -50 "$LOG"; exit 1; }
-      sleep 2
-    done
-    echo "::error::the app did not answer in 6 minutes"; tail -50 "$LOG"; exit 1
+    echo "wrote $APP/.env"
     ;;
-  pg)
-    pw=$(openssl rand -hex 24)
-    echo "::add-mask::$pw"
-    url="postgresql://payload:$pw@127.0.0.1:4900/payload"
-    echo "::add-mask::$url"
-    POSTGRES_PASSWORD=$pw docker run -d --name dogfood-payload-pg -p 127.0.0.1:4900:5432 \
-      -e POSTGRES_USER=payload -e POSTGRES_DB=payload -e POSTGRES_PASSWORD \
-      postgres:17.6-alpine@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94 > /dev/null
-    for _ in $(seq 1 60); do
-      docker exec dogfood-payload-pg pg_isready -U payload -d payload -h 127.0.0.1 > /dev/null 2>&1 && { echo "Postgres up on 4900"; echo "DATABASE_URL=$url" >> "$GITHUB_ENV"; exit 0; }
-      sleep 1
-    done
-    echo "::error::Postgres did not become ready"; docker logs dogfood-payload-pg 2>&1 | tail -20; exit 1
+  wait)
+    node -e '
+      const u = "http://127.0.0.1:" + process.argv[1] + "/api/users/init";
+      (async () => {
+        for (let i = 0; i < 180; i++) {
+          try { const r = await fetch(u); if (r.status === 200) { console.log("app up: " + (await r.text()).slice(0, 200)); return; } } catch {}
+          await new Promise((r) => setTimeout(r, 2000));
+        }
+        console.error("the app did not answer in 6 minutes"); process.exit(1);
+      })();
+    ' "$PORT"
     ;;
-  shim)
-    nohup node dogfood/payload/shim.mjs --listen 4961 --upstream "http://127.0.0.1:$PORT" > "${RUNNER_TEMP:-/tmp}/payload-shim.log" 2>&1 &
-    echo $! > "$PIDFILE.shim"
-    for _ in $(seq 1 30); do
-      (exec 3<>/dev/tcp/127.0.0.1/4961) 2>/dev/null && { echo "shim up: $(head -1 "${RUNNER_TEMP:-/tmp}/payload-shim.log")"; exit 0; }
-      sleep 0.5
-    done
-    echo "::error::the shim did not start"; cat "${RUNNER_TEMP:-/tmp}/payload-shim.log"; exit 1
-    ;;
-  stop)
-    for f in "$PIDFILE.shim" "$PIDFILE"; do [ -f "$f" ] && kill "$(cat "$f")" 2>/dev/null || true; done
-    docker rm -f dogfood-payload-pg > /dev/null 2>&1 || true
+  shim-wait)
+    tcp_wait 127.0.0.1 4961 15 || { echo "the shim did not start"; cat "$RUNNER_TEMP/payload-shim.log" 2>/dev/null; exit 1; }
+    echo "shim up: $(head -1 "$RUNNER_TEMP/payload-shim.log" 2>/dev/null)"
     ;;
 esac
