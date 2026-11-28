@@ -24,6 +24,10 @@ on:
       - 'loop/teardown.sh'
       - 'loop/t0-bundle.mjs'
       - '.github/workflows/dogfood-*.yml'
+      # The action and the CLI contract the workers run (uses: ./ in every work job).
+      - 'src/**'
+      - 'action.yml'
+      - 'contract.mjs'
 
 permissions:
   contents: read

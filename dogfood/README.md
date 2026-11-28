@@ -46,6 +46,23 @@ bundle is built by `t0-manifest`, another job that runs none of this code. Each 
 `workflow_call`: `dogfood-sandbox-proof.yml` calls the five on a pull request that touches what they run, with
 `proof: true` (the worker-kit builds the bundle in a dry run).
 
+### Threat notes
+
+- **The harness is read-only.** `dogfood/` (our scripts, the snapshot and set-up code, the manifests) is not in the
+  read-write work volume: `up` puts it in a volume of its own, owned by root, mounted read-only over
+  `<workspace>/dogfood` in every container of the job. A third-party install script can rewrite its own tree and the
+  results folders, never the harness a later step or the CLI reads.
+- **Files come back from paused containers.** While the collect helper or `pull` reads the work volume, the unit and
+  every service are paused (`docker pause`), so nothing changes a file during the read; a pause that fails reads nothing.
+- **What remains: a subject can fake its own result.** The CLI runs in the unit with the server it tests (a full run
+  needs the CLI's loopback gate in front of the backend, and restarts the server), and the unit lives for the whole job.
+  A process that the server, or an earlier sandboxed step, leaves running in the unit or in a service can change what
+  the CLI reads or writes, and its results, before they are collected. So a dogfood worker's verdict is only as
+  trustworthy as the code it runs: a hostile subject could make its own job green (and hide a lead) or red. It cannot
+  reach the runner, its token, the job's other steps or the result bundle: the sandbox has no network out, the runner's
+  steps only read what comes back as data, and `t0-manifest` runs on another runner and reads only job results. The
+  subjects are IsoKron's own builds and pinned upstream code.
+
 `dogfood-kubernetes.yml` is the exception. kind runs the cluster in privileged Docker containers, which the sandbox
 cannot give, and the server under test must reach the cluster's API, so that workflow still runs third-party code on
 the plain runner. It is therefore not a T0 worker: it builds no result bundle and must not be in the loop's lanes

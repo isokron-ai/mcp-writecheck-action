@@ -196,7 +196,9 @@ jobs:
         run: dogfood/sandbox-guarded.sh
       - name: Sandbox up (the workspace mirrored into it; 127.0.0.1:4930 is Grafana at .5)
         run: node dogfood/sbx.mjs up --pass GRAFANA_URL --fwd 4930=5:3000
-      # The sandbox's Go image (Go 1.26.11; go.mod asks 1.26.10), the module proxy and checksum database only, through
+      # The sandbox's Go image (Go 1.26.11; go.mod asks 1.26.10), the module proxy, the checksum database and the store
+      # proxy.golang.org redirects module downloads to (storage.googleapis.com: without it the build fails, the proxy
+      # refusing that host; proof run 46103312907 of wca#85), through
       # the allowlist proxy. No VCS stamp: the image has no git, and the binary is never published.
       - name: Build the research build (in the sandbox)
         run: >-

@@ -1,0 +1,90 @@
+[
+  {
+    "id": "r-dsb-07-env-check",
+    "file": "dogfood/sbx.mjs",
+    "find": "  checkEnv(M, all, hostEnv);\n",
+    "replace": "",
+    "test": "test/dogfood-sandbox.test.mjs",
+    "what": "the environment check of a command in the unit (R-DSB-07)"
+  },
+  {
+    "id": "r-dsb-08-stop-commands",
+    "file": "dogfood/sbx.mjs",
+    "find": "    mark(`::stop-commands::${token}\\n`);",
+    "replace": "",
+    "test": "test/dogfood-sandbox.test.mjs",
+    "what": "the stop-commands marker before sandboxed output (R-DSB-08)"
+  },
+  {
+    "id": "r-dsb-09-sandbox-head",
+    "file": "dogfood/sbx.mjs",
+    "find": "  if (head !== env.SANDBOX_REF) throw new SbxError('the sandbox checkout is not SANDBOX_REF');",
+    "replace": "",
+    "test": "test/dogfood-sandbox.test.mjs",
+    "what": "the SANDBOX_REF HEAD check (R-DSB-09)"
+  },
+  {
+    "id": "r-dsb-10-hosts",
+    "file": "dogfood/sbx.mjs",
+    "find": "!hosts.every((h) => /^(?=.{3,100}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(h) && !/^[0-9.]+$/.test(h))",
+    "replace": "!hosts.every((h) => /^[a-z0-9.:*\\/-]{1,100}$/i.test(h))",
+    "test": "test/dogfood-sandbox.test.mjs",
+    "what": "the --hosts pattern (R-DSB-10)"
+  },
+  {
+    "id": "r-dsb-11-host-folders",
+    "file": "dogfood/sbx.mjs",
+    "find": "allow: (top) => !seen.has(top)",
+    "replace": "allow: null",
+    "test": "test/dogfood-sandbox.test.mjs",
+    "what": "the folders the host had before the call (R-DSB-11)"
+  },
+  {
+    "id": "r-dsb-12-pull-realpath",
+    "file": "dogfood/sbx.mjs",
+    "find": " || fs.realpathSync(p) !== p",
+    "replace": "",
+    "test": "test/dogfood-sandbox.test.mjs",
+    "what": "pull's realpath check (R-DSB-12)"
+  },
+  {
+    "id": "r-dsb-12-env-nul-length",
+    "file": "loop/sandbox/dogfood-in.mjs",
+    "find": " || line.includes('\\0') || line.length > 8192",
+    "replace": "",
+    "test": "test/dogfood-sandbox.test.mjs",
+    "what": "the env file's NUL and length check (R-DSB-12)"
+  },
+  {
+    "id": "r-dsb-13-failed-pause",
+    "file": "dogfood/sbx.mjs",
+    "find": "      if (r.exit !== 0) throw new SbxError(`could not pause ${n}: nothing is read while a container of the job runs`);\n",
+    "replace": "",
+    "test": "test/dogfood-sandbox.test.mjs",
+    "what": "a failed pause stops the read (R-DSB-13)"
+  },
+  {
+    "id": "r-dsb-14-harness-ro",
+    "file": "dogfood/sbx.mjs",
+    "find": "{ src: st.harnessVol, dst: join(st.workspace, 'dogfood'), ro: true }, ",
+    "replace": "",
+    "test": "test/dogfood-sandbox.test.mjs",
+    "what": "the read-only harness mount (R-DSB-14)"
+  },
+  {
+    "id": "r-dsb-05-env-deny",
+    "file": "loop/sandbox/dogfood-in.mjs",
+    "find": " || ENV_FILE_DENY.test(name)",
+    "replace": "",
+    "test": "test/dogfood-sandbox.test.mjs",
+    "what": "the env file deny list (R-DSB-05)"
+  },
+  {
+    "id": "r-dsb-05-run-net-only",
+    "file": "loop/sandbox/dogfood-unit.mjs",
+    "find": "if (!RUN_NET.test(host)) return",
+    "replace": "if (false) return",
+    "test": "test/dogfood-sandbox.test.mjs",
+    "what": "the unit forwards only to the run network (R-DSB-05)"
+  }
+]
