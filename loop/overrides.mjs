@@ -42,6 +42,7 @@ const HOST = [
 export function valueProblem(v, { root = join(here, 'sandbox', 'launch-files') } = {}) {
   const x = valueOf(v);
   if (x.split(/[\\/]/).includes('..')) return 'has a .. segment';
+  if (!x.startsWith('/') && HOST.some((re) => re.test(x))) return 'names a host; values point at files of ours or are plain words';
   if (x.startsWith('/') || x.includes('/') || x.includes('\\')) {
     if (!x.startsWith('/')) return 'a relative path: say where it is';
     const n = posix.normalize(x);
