@@ -1,0 +1,13 @@
+{
+  "format": "writecheck-min-specs/1",
+  "note": "The API descriptions the min-mode writecheck lane may use (tool-qa docs/INTERFACES.md, Writecheck modes). A shard's backend and spec_url must match an entry here exactly; the description is fetched from this URL only, outside the sandbox, and must have this sha256. Add an entry by reviewed pull request, never from a dispatch input. base_url_env: names that point a server at the backend when the classifier gives none.",
+  "specs": {
+    "tiny-tracker": {
+      "spec_url": "https://raw.githubusercontent.com/isokron-ai/mcp-write-safety/942c079bd7980f0a2f135312583270c31aff202e/examples/tiny-tracker/openapi.yaml",
+      "spec_format": "openapi3",
+      "sha256": "2ae756f3ee579324a59be62d31c3d182acd03d6fe6664fb0cd564c4b58246349",
+      "backend_kind": "service",
+      "base_url_env": ["TRACKER_BACKEND_URL"]
+    }
+  }
+}
