@@ -18,14 +18,14 @@
 // ---------------------------------------------------------------------------------------------
 
 /**
- * Commit 942c079 of the public isokron-ai/mcp-write-safety (main on 28 Nov 2026; moved from 3af41c6 of
+ * Commit 7001b62 of the public isokron-ai/mcp-write-safety (main on 28 Nov 2026; moved from 3af41c6 of
  * 16 Nov 2026): MWS 0.9 and mcp-writecheck 0.1.0 (npm @mcp-write-safety/writecheck) with everything on main
  * since, including the held-request checks and the capture's stop_sent field. The dogfood workflows still
  * check out tiny-tracker at 7b95215 (TT_REF), and the loop fixtures install tiny-tracker 0.1.0 from npm. A full
  * SHA is needed: `git fetch` does not take a short one. SHAs cited elsewhere in this repository from
  * before 16 Nov 2026 refer to the private pre-publication history and do not resolve publicly.
  */
-export const CLI_DEFAULT_REF = '942c079bd7980f0a2f135312583270c31aff202e';
+export const CLI_DEFAULT_REF = '7001b622c0d8a917beff3aecf24c9fcdfbbd2e98';
 
 /**
  * How the CLI is obtained when the caller gives no `cli-path`.
