@@ -66,7 +66,8 @@ export async function resolveBeyondSeed(subject, entry, { mck, fetch = globalThi
     // This lane starts stdio servers and runs the CLI against them; a streamable-HTTP launch is a gap of ours.
     if ((r.launch.transport ?? 'stdio') !== 'stdio') return crateOr(crates, { stage: 'install', reason: 'unsupported_transport', fault: 'tool', detail: 'the runnable package is offered over streamable HTTP only; this lane starts stdio servers' });
     const l = r.launch;
-    const pkg = l.kind === 'docker' ? `oci:${/@sha256:([0-9a-f]{64})$/.exec(l.image)?.[1] ?? 'unpinned'}` : `${l.kind}:${l.package}`;
+    // A Go repository built at its commit (live-probe R-LP-91) has a package path, not a package name.
+    const pkg = l.kind === 'docker' ? `oci:${/@sha256:([0-9a-f]{64})$/.exec(l.image)?.[1] ?? 'unpinned'}` : l.kind === 'go' ? `go:${l.module}` : `${l.kind}:${l.package}`;
     return { fixture: null, launch: l, source: 'registry', package: pkg, choice: { type: r.choice?.type ?? null, matched_by: r.choice?.matched_by ?? null, verified_by: r.choice?.verified_by ?? null, oci_bytes: Number.isSafeInteger(r.choice?.oci_bytes) ? r.choice.oci_bytes : null } };
   }
   const d = mck.DETAILS[r.detail] ?? mck.DETAILS.upstream_error;

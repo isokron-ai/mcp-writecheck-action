@@ -41,7 +41,7 @@ case "${1:-}" in
     dogfood/build-cli.sh
     fetch_at isokron-ai/mcp-surface-corpus "$SANDBOX_REF" msc
     fetch_at isokron-ai/tool-qa "$SEED_REF" toolqa /history/seed-v1.json
-    fetch_at isokron-ai/mcp-check "$MCP_CHECK_REF" mck /corpus/live-probe.mjs /corpus/tool-commit.mjs /corpus/mcpb.mjs /corpus/pypi-entry.mjs /corpus/scan-static.mjs /corpus/static-read.cjs /corpus/ast-grep/ /corpus/oracles/ /corpus/fixtures/live-probe/ /src/ /engine/ /package.json
+    fetch_at isokron-ai/mcp-check "$MCP_CHECK_REF" mck /corpus/live-probe.mjs /corpus/tool-commit.mjs /corpus/mcpb.mjs /corpus/pypi-entry.mjs /corpus/go-entry.mjs /corpus/scan-static.mjs /corpus/static-read.cjs /corpus/ast-grep/ /corpus/oracles/ /corpus/fixtures/live-probe/ /src/ /engine/ /package.json
     ;;
   # The dogfood workers (dogfood/sbx.mjs): only the sandbox, at the commit their sandbox-guard step names.
   sandbox)

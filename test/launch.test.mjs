@@ -103,6 +103,18 @@ test('R-WC-33: an OCI subject gets the image the live-probe resolver chooses, wi
   await assert.rejects(loadMck(mkdtempSync(join(tmpdir(), 'wc-no-mck-'))));
 });
 
+test('R-WC-42: a Go repository the live-probe resolver builds at its commit is named by its package path, never go:undefined, and the loop fetches the resolver\'s Go entry module', async () => {
+  const sha = 'ab'.repeat(20);
+  const goRunnable = { status: 'runnable', launch: { kind: 'go', module: 'github.com/acme/srv/cmd/srv', version: sha }, choice: { type: 'go', matched_by: 'repository', verified_by: 'source_commit' } };
+  const r = await resolveBeyondSeed('acme/oci', SEED.map.get('acme/oci'), { mck: fakeMck(goRunnable) });
+  assert.deepEqual(r.launch, goRunnable.launch);
+  assert.equal(r.package, 'go:github.com/acme/srv/cmd/srv');
+  assert.equal(r.source, 'registry');
+  assert.equal(r.choice.type, 'go');
+  // live-probe.mjs imports corpus/go-entry.mjs: the sparse checkout of mcp-check must hold it, or the resolver does not load.
+  assert.match(readFileSync(join(root, 'loop', 'prepare.sh'), 'utf8'), /fetch_at isokron-ai\/mcp-check "\$MCP_CHECK_REF" mck [^\n]*\/corpus\/go-entry\.mjs /);
+});
+
 test('R-WC-33: with a checkout of mcp-check at MCP_CHECK_REF, its own resolver chooses the image from a registry entry', { skip: !process.env.MCK_DIR && 'set MCK_DIR to a checkout of isokron-ai/mcp-check at MCP_CHECK_REF' }, async () => {
   const mck = await loadMck(process.env.MCK_DIR);
   assert.deepEqual(MCK_NEEDS.filter((n) => mck[n] === undefined), []);
