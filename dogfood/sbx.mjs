@@ -246,10 +246,12 @@ async function cmdUp(argv, env) {
   const wsRel = relative(st.mirror, st.workspace);
   // dogfood/ (our scripts and manifests) is not in it: it goes into a volume of its own, owned by root and mounted
   // read-only over <workspace>/dogfood in every container, so a third-party install script cannot rewrite the harness.
+  // Its mount point is made before the tree goes to the sandbox user (the helper is root with CHOWN only: no DAC_OVERRIDE),
+  // then handed back to root.
   const tar = spawnSync('tar', ['-C', st.mirror, '-cf', '-', '--owner=0', '--group=0', `--exclude=${wsRel}/msc`, `--exclude=${wsRel}/mws-cli`, `--exclude=${wsRel}/.git`, `--exclude=${wsRel}/dogfood`, wsRel], { maxBuffer: 4 * 1024 * 1024 * 1024 });
   if (tar.status !== 0) throw new SbxError('packing the workspace failed');
   const tempRel = relative(st.mirror, st.temp);
-  await shard.dk.must(shard.helper(null, { user: '0:0', stdin: true, capAdd: ['CHOWN'], mounts: [{ src: st.wsVol, dst: st.mirror }], cmd: ['sh', '-c', 'cd "$1" && tar -x -f - --no-same-owner && mkdir -p "$2/sbx-env" "$2/home" && : > "$2/sbx-env/env" && chown -R 65534:65534 "$1" && mkdir -p "$3/dogfood" && chown 0:0 "$3/dogfood" && chmod 755 "$3/dogfood"', 'sh', st.mirror, tempRel, wsRel] }, { input: tar.stdout, deadline: Date.now() + 600_000 }), 'workspace into the work volume');
+  await shard.dk.must(shard.helper(null, { user: '0:0', stdin: true, capAdd: ['CHOWN'], mounts: [{ src: st.wsVol, dst: st.mirror }], cmd: ['sh', '-c', 'cd "$1" && tar -x -f - --no-same-owner && mkdir -p "$2/sbx-env" "$2/home" "$3/dogfood" && : > "$2/sbx-env/env" && chown -R 65534:65534 "$1" && chown 0:0 "$3/dogfood" && chmod 755 "$3/dogfood"', 'sh', st.mirror, tempRel, wsRel] }, { input: tar.stdout, deadline: Date.now() + 600_000 }), 'workspace into the work volume');
   st.harnessVol = await shard.dk.volume(`surface-${shard.runId}-harness`);
   const htar = spawnSync('tar', ['-C', st.workspace, '-cf', '-', '--owner=0', '--group=0', '--mode=a+rX,go-w', 'dogfood'], { maxBuffer: 256 * 1024 * 1024 });
   if (htar.status !== 0) throw new SbxError('packing the harness failed');
